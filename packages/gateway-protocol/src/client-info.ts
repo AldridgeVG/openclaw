@@ -20,6 +20,7 @@ export const GATEWAY_CLIENT_IDS = {
   TEST: "test",
   FINGERPRINT: "fingerprint",
   PROBE: "openclaw-probe",
+  BCLAW_DESKTOP: "bclaw-desktop",
 } as const;
 
 export type GatewayClientId = (typeof GATEWAY_CLIENT_IDS)[keyof typeof GATEWAY_CLIENT_IDS];

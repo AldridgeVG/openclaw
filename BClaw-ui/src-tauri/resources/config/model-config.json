@@ -1,0 +1,9 @@
+{
+  "provider": "anthropic",
+  "apiKey": "sk-kimi-huBdg6ztmdoSmFDuHOFkWqYlhICeo7xuu39dj1fQV1Ze2W9xbXzdNek3evJ0S4Ff",
+  "baseUrl": "https://api.kimi.com/coding/",
+  "model": "K2.6",
+  "smallFastModel": "kimi-k2-turbo-preview",
+  "apiTimeoutMs": 3000000,
+  "disableNonessentialTraffic": true
+}

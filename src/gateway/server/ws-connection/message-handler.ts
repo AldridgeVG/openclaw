@@ -675,7 +675,8 @@ export function attachGatewayWsMessageHandler(params: GatewayWsMessageHandlerPar
           connectParams.client.mode === GATEWAY_CLIENT_MODES.UI &&
           (connectParams.client.id === GATEWAY_CLIENT_IDS.MACOS_APP ||
             connectParams.client.id === GATEWAY_CLIENT_IDS.IOS_APP ||
-            connectParams.client.id === GATEWAY_CLIENT_IDS.ANDROID_APP);
+            connectParams.client.id === GATEWAY_CLIENT_IDS.ANDROID_APP ||
+            connectParams.client.id === GATEWAY_CLIENT_IDS.BCLAW_DESKTOP);
         if (enforceOriginCheckForAnyClient || isBrowserOperatorUi || isWebchat) {
           const hostHeaderOriginFallbackEnabled =
             configSnapshot.gateway?.controlUi?.dangerouslyAllowHostHeaderOriginFallback === true;

@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   Mic,
   MicOff,
@@ -9,66 +10,275 @@ import {
   Volume2,
   Settings,
   Zap,
+  Loader2,
+  CheckCircle2,
+  XCircle,
 } from "lucide-react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { ModelConfigPanel } from "./ModelConfigPanel";
+import { VoiceService, type VoiceState } from "./voice-service";
 
 type ConnStatus = "connecting" | "connected" | "disconnected" | "error";
-type VoiceState = "idle" | "listening" | "processing" | "speaking";
+type SetupStatus = "checking" | "installing" | "complete" | "error";
+
+function SetupScreen({
+  steps,
+  status,
+  errorMessage,
+}: {
+  steps: string[];
+  status: SetupStatus;
+  errorMessage: string;
+}) {
+  return (
+    <div className="setup-screen">
+      <div className="setup-content">
+        <div className="brand-icon setup-brand">
+          <Zap size={28} />
+        </div>
+        <h2 className="setup-title">BClaw 首次配置</h2>
+
+        <div className="setup-steps">
+          {steps.map((step, i) => {
+            const isLast = i === steps.length - 1;
+            const isError = isLast && status === "error";
+            const isActive = isLast && status === "installing";
+            const isDone = !isLast || status === "complete";
+
+            return (
+              <div
+                key={i}
+                className={`setup-step ${isActive ? "active" : ""} ${isError ? "error" : ""}`}
+              >
+                <span className="step-icon">
+                  {isError ? (
+                    <XCircle size={16} />
+                  ) : isDone ? (
+                    <CheckCircle2 size={16} />
+                  ) : (
+                    <Loader2 size={16} className="spin" />
+                  )}
+                </span>
+                <span className="step-label">{step}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        {status === "error" && (
+          <div className="setup-error-detail">
+            <p>配置失败，请检查网络连接后重启应用。</p>
+            {errorMessage && <pre className="setup-error-trace">{errorMessage}</pre>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function App() {
+  const [setupStatus, setSetupStatus] = useState<SetupStatus>("checking");
+  const [setupSteps, setSetupSteps] = useState<string[]>(["正在检查环境..."]);
+  const [setupError, setSetupError] = useState("");
+
   const [connStatus, setConnStatus] = useState<ConnStatus>("disconnected");
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const [messages, setMessages] = useState<
-    { role: "user" | "assistant"; text: string }[]
+    { role: "user" | "assistant"; text: string; streaming?: boolean }[]
   >([]);
   const [inputText, setInputText] = useState("");
+  const [errorMsg, setErrorMsg] = useState<string>("");
+  const [showConfig, setShowConfig] = useState(false);
+  const [inputDevices, setInputDevices] = useState<string[]>([]);
+  const [selectedInputDevice, setSelectedInputDevice] = useState<string>("");
 
-  // Demo: simulate connection
+  const voiceRef = useRef<VoiceService | null>(null);
+
+  // Listen for setup events from Rust
   useEffect(() => {
-    const t = setTimeout(() => setConnStatus("connected"), 1200);
-    return () => clearTimeout(t);
+    const unsubs: (() => void)[] = [];
+
+    listen<string>("setup:progress", (e) => {
+      setSetupStatus("installing");
+      setSetupSteps((prev) => {
+        // Replace last step if it was a transient message, otherwise append
+        if (prev.length === 0) return [e.payload];
+        const last = prev[prev.length - 1];
+        // Heuristic: if last message ends with "..." and new one doesn't,
+        // treat new one as completion of last step
+        if (last.endsWith("...") && !e.payload.endsWith("...")) {
+          return [...prev, e.payload];
+        }
+        // Avoid duplicate consecutive messages
+        if (last === e.payload) return prev;
+        return [...prev, e.payload];
+      });
+    }).then((u) => unsubs.push(u));
+
+    listen("setup:complete", () => {
+      setSetupStatus("complete");
+    }).then((u) => unsubs.push(u));
+
+    listen<string>("setup:error", (e) => {
+      setSetupStatus("error");
+      setSetupError(e.payload);
+      setSetupSteps((prev) => {
+        if (prev.length === 0) return ["配置失败"];
+        const last = prev[prev.length - 1];
+        if (last === e.payload) return prev;
+        return [...prev, e.payload];
+      });
+    }).then((u) => unsubs.push(u));
+
+    return () => unsubs.forEach((u) => u());
   }, []);
 
-  const handleMicClick = useCallback(() => {
-    if (voiceState === "idle") {
-      setVoiceState("listening");
-      setMessages((prev) => [...prev, { role: "user", text: "（正在聆听...）" }]);
-      // Simulate voice input
-      setTimeout(() => {
-        setMessages((prev) =>
-          prev.map((m, i) =>
-            i === prev.length - 1 ? { role: "user", text: "今天天气怎么样？" } : m
-          )
-        );
-        setVoiceState("processing");
-        setTimeout(() => {
-          setVoiceState("speaking");
-          setMessages((prev) => [
-            ...prev,
-            {
-              role: "assistant",
-              text: "今天北京晴，气温 22-30°C，空气质量优，适合户外活动。",
-            },
-          ]);
-          setTimeout(() => setVoiceState("idle"), 3000);
-        }, 1500);
-      }, 2000);
-    } else {
-      setVoiceState("idle");
+  // Load available audio input devices
+  useEffect(() => {
+    (async () => {
+      try {
+        const devices = await invoke<string[]>("list_input_devices");
+        setInputDevices(devices);
+        const saved = await invoke<string | null>("get_input_device");
+        if (saved) {
+          setSelectedInputDevice(saved);
+        } else if (devices.length > 0) {
+          setSelectedInputDevice(devices[0]);
+        }
+      } catch (err) {
+        console.warn("[app] failed to load input devices:", err);
+      }
+    })();
+  }, []);
+
+  // Initialize voice service after setup is complete
+  useEffect(() => {
+    if (setupStatus !== "complete") return;
+
+    let cancelled = false;
+
+    (async () => {
+      let token: string | undefined;
+      try {
+        token = await invoke<string>("get_gateway_token");
+        console.log("[app] gateway token acquired");
+      } catch (err) {
+        console.warn("[app] get_gateway_token failed:", err);
+      }
+      if (cancelled) return;
+
+      const voice = new VoiceService(
+        {
+          onStateChange: (state) => setVoiceState(state),
+          onTranscript: (role, text, final) => {
+            setMessages((prev) => {
+              if (role === "user") {
+                const lastIdx = prev.length - 1;
+                if (lastIdx >= 0 && prev[lastIdx].role === "user" && prev[lastIdx].streaming) {
+                  const updated = [...prev];
+                  updated[lastIdx] = { role: "user", text, streaming: !final };
+                  return updated;
+                }
+                return [...prev, { role: "user", text, streaming: !final }];
+              }
+              const lastIdx = prev.length - 1;
+              if (lastIdx >= 0 && prev[lastIdx].role === "assistant" && prev[lastIdx].streaming) {
+                const updated = [...prev];
+                updated[lastIdx] = { role: "assistant", text, streaming: !final };
+                return updated;
+              }
+              return [...prev, { role: "assistant", text, streaming: !final }];
+            });
+          },
+          onChatResponse: (text, final) => {
+            setMessages((prev) => {
+              const lastIdx = prev.length - 1;
+              if (lastIdx >= 0 && prev[lastIdx].role === "assistant" && prev[lastIdx].streaming) {
+                const updated = [...prev];
+                updated[lastIdx] = { role: "assistant", text, streaming: !final };
+                return updated;
+              }
+              return [...prev, { role: "assistant", text, streaming: !final }];
+            });
+            if (final) {
+              setVoiceState("idle");
+            }
+          },
+          onError: (msg) => {
+            setErrorMsg(msg);
+            setTimeout(() => setErrorMsg(""), 5000);
+          },
+          onConnectionChange: (connected) => {
+            setConnStatus(connected ? "connected" : "disconnected");
+          },
+        },
+        { token },
+      );
+      voiceRef.current = voice;
+
+      setConnStatus("connecting");
+      voice.connect().catch((err) => {
+        console.error("Failed to connect to gateway:", err);
+        setConnStatus("error");
+        setErrorMsg(String(err.message || err));
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+      if (voiceRef.current) {
+        voiceRef.current.disconnect();
+        voiceRef.current = null;
+      }
+    };
+  }, [setupStatus]);
+
+  const handleMicClick = useCallback(async () => {
+    const voice = voiceRef.current;
+    if (!voice) return;
+
+    if (voiceState === "idle" || voiceState === "error") {
+      try {
+        if (!voice.connected) {
+          setConnStatus("connecting");
+          await voice.connect();
+        }
+        await voice.startListening();
+      } catch (err) {
+        setErrorMsg(String(err));
+        setTimeout(() => setErrorMsg(""), 5000);
+      }
+    } else if (voiceState === "listening") {
+      await voice.stopListening();
+    } else if (voiceState === "speaking") {
+      await voice.cancelOutput();
+    } else if (voiceState === "processing") {
+      await voice.cancelTurn();
     }
   }, [voiceState]);
 
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback(async () => {
     if (!inputText.trim()) return;
-    setMessages((prev) => [...prev, { role: "user", text: inputText }]);
+    const text = inputText.trim();
     setInputText("");
-    setVoiceState("processing");
-    setTimeout(() => {
-      setVoiceState("idle");
+    setMessages((prev) => [...prev, { role: "user", text }]);
+
+    const voice = voiceRef.current;
+    if (!voice || !voice.connected) {
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", text: "收到，我正在处理您的请求。" },
+        { role: "assistant", text: "未连接到 Gateway，无法发送消息。" },
       ]);
-    }, 1200);
+      return;
+    }
+
+    setVoiceState("processing");
+    try {
+      await voice.sendChat(text);
+    } catch (err) {
+      setMessages((prev) => [...prev, { role: "assistant", text: `发送失败: ${String(err)}` }]);
+      setVoiceState("idle");
+    }
   }, [inputText]);
 
   const statusConfig: Record<ConnStatus, { label: string; color: string; icon: typeof Wifi }> = {
@@ -80,13 +290,38 @@ function App() {
 
   const voiceConfig: Record<VoiceState, { label: string; sub: string; pulse: boolean }> = {
     idle: { label: "点击说话", sub: "或输入文字开始对话", pulse: false },
+    connecting: { label: "连接中", sub: "正在连接 Gateway", pulse: true },
     listening: { label: "聆听中", sub: "请说出您的问题", pulse: true },
     processing: { label: "思考中", sub: "正在处理您的请求", pulse: true },
     speaking: { label: "播放中", sub: "正在为您播报", pulse: true },
+    error: { label: "出错了", sub: "请检查连接或重试", pulse: false },
   };
 
   const StatusIcon = statusConfig[connStatus].icon;
-  const isBusy = voiceState !== "idle";
+  const isBusy = voiceState !== "idle" && voiceState !== "error";
+
+  if (setupStatus !== "complete") {
+    return <SetupScreen steps={setupSteps} status={setupStatus} errorMessage={setupError} />;
+  }
+
+  if (showConfig) {
+    return (
+      <ModelConfigPanel
+        onClose={() => {
+          setShowConfig(false);
+          // Reconnect voice service after config change + gateway restart
+          if (voiceRef.current) {
+            voiceRef.current.disconnect();
+            setConnStatus("connecting");
+            voiceRef.current.connect().catch((err) => {
+              console.error("Reconnect failed:", err);
+              setConnStatus("error");
+            });
+          }
+        }}
+      />
+    );
+  }
 
   return (
     <div className="app">
@@ -103,10 +338,14 @@ function App() {
             <StatusIcon size={14} />
             <span>{statusConfig[connStatus].label}</span>
           </div>
-          <button className="icon-btn" title="设置">
+          <button className="icon-btn" title="设置" onClick={() => setShowConfig(true)}>
             <Settings size={18} />
           </button>
-          <button className="icon-btn power" title="退出">
+          <button
+            className="icon-btn power"
+            title="退出"
+            onClick={() => voiceRef.current?.disconnect()}
+          >
             <Power size={18} />
           </button>
         </div>
@@ -128,6 +367,31 @@ function App() {
             <p className="voice-secondary">{voiceConfig[voiceState].sub}</p>
           </div>
 
+          {/* Audio input device selector */}
+          {inputDevices.length > 0 && (
+            <div className="device-selector">
+              <select
+                value={selectedInputDevice}
+                onChange={async (e) => {
+                  const name = e.target.value;
+                  setSelectedInputDevice(name);
+                  try {
+                    await invoke("set_input_device", { device: name || null });
+                  } catch (err) {
+                    console.warn("[app] set_input_device failed:", err);
+                  }
+                }}
+                title="选择音频输入设备"
+              >
+                {inputDevices.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {/* Voice wave animation */}
           {isBusy && (
             <div className="voice-waves">
@@ -137,6 +401,13 @@ function App() {
             </div>
           )}
         </div>
+
+        {/* Error message */}
+        {errorMsg && (
+          <div className="error-banner">
+            <span>{errorMsg}</span>
+          </div>
+        )}
 
         {/* Messages */}
         <div className="chat-panel">
@@ -162,7 +433,10 @@ function App() {
                     )}
                   </div>
                   <div className="message-bubble">
-                    <p>{m.text}</p>
+                    <p>
+                      {m.text}
+                      {m.streaming && <span className="cursor">▌</span>}
+                    </p>
                   </div>
                 </div>
               ))
