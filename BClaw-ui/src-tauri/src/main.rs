@@ -21,6 +21,7 @@ pub struct AudioState {
     wake_capture_stream: Mutex<Option<cpal::Stream>>,
     playback_handle: Mutex<Option<audio::playback::PlaybackHandle>>,
     selected_input_device: Mutex<Option<String>>,
+    selected_output_device: Mutex<Option<String>>,
 }
 
 // SAFETY: cpal::Stream does not auto-impl Send on Windows MSVC, but it is
@@ -54,6 +55,35 @@ fn set_input_device(
     state: tauri::State<AudioState>,
 ) -> Result<(), String> {
     let mut lock = state.selected_input_device.lock().map_err(|e| e.to_string())?;
+    *lock = device;
+    Ok(())
+}
+
+#[tauri::command]
+fn list_output_devices() -> Result<Vec<String>, String> {
+    let host = cpal::default_host();
+    let devices = host.output_devices().map_err(|e| e.to_string())?;
+    let mut names = Vec::new();
+    for device in devices {
+        if let Ok(name) = device.name() {
+            names.push(name);
+        }
+    }
+    Ok(names)
+}
+
+#[tauri::command]
+fn get_output_device(state: tauri::State<AudioState>) -> Result<Option<String>, String> {
+    let lock = state.selected_output_device.lock().map_err(|e| e.to_string())?;
+    Ok(lock.clone())
+}
+
+#[tauri::command]
+fn set_output_device(
+    device: Option<String>,
+    state: tauri::State<AudioState>,
+) -> Result<(), String> {
+    let mut lock = state.selected_output_device.lock().map_err(|e| e.to_string())?;
     *lock = device;
     Ok(())
 }
@@ -136,7 +166,12 @@ fn play_audio(
         }
     }
 
-    let new_handle = audio::playback::play_pcm16_base64(audio_base64)?;
+    let device_name = {
+        let lock = state.selected_output_device.lock().map_err(|e| e.to_string())?;
+        lock.clone()
+    };
+
+    let new_handle = audio::playback::play_pcm16_base64(audio_base64, device_name)?;
     let mut handle = state.playback_handle.lock().map_err(|e| e.to_string())?;
     *handle = Some(new_handle);
     eprintln!("[tauri] play_audio ok");
@@ -219,6 +254,7 @@ fn main() {
             wake_capture_stream: Mutex::new(None),
             playback_handle: Mutex::new(None),
             selected_input_device: Mutex::new(None),
+            selected_output_device: Mutex::new(None),
         })
         .manage(GatewayManager::new());
 
@@ -275,6 +311,9 @@ fn main() {
             list_input_devices,
             get_input_device,
             set_input_device,
+            list_output_devices,
+            get_output_device,
+            set_output_device,
             get_model_config,
             set_model_config,
             get_gateway_token,

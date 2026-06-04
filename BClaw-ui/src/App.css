@@ -1040,6 +1040,31 @@ body {
   }
 }
 
+.config-select {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  outline: none;
+}
+
+.config-select:focus {
+  border-color: var(--blue-300);
+}
+
+.config-loading-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 8px 0;
+}
+
 @media (max-width: 480px) {
   .header {
     padding: 10px 16px;

@@ -90,8 +90,6 @@ function App() {
   const [inputText, setInputText] = useState("");
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [showConfig, setShowConfig] = useState(false);
-  const [inputDevices, setInputDevices] = useState<string[]>([]);
-  const [selectedInputDevice, setSelectedInputDevice] = useState<string>("");
   const [wakeActive, setWakeActive] = useState(false);
 
   const voiceRef = useRef<VoiceService | null>(null);
@@ -133,24 +131,6 @@ function App() {
     }).then((u) => unsubs.push(u));
 
     return () => unsubs.forEach((u) => u());
-  }, []);
-
-  // Load available audio input devices
-  useEffect(() => {
-    (async () => {
-      try {
-        const devices = await invoke<string[]>("list_input_devices");
-        setInputDevices(devices);
-        const saved = await invoke<string | null>("get_input_device");
-        if (saved) {
-          setSelectedInputDevice(saved);
-        } else if (devices.length > 0) {
-          setSelectedInputDevice(devices[0]);
-        }
-      } catch (err) {
-        console.warn("[app] failed to load input devices:", err);
-      }
-    })();
   }, []);
 
   // Initialize voice service after setup is complete
@@ -382,31 +362,6 @@ function App() {
             <p className="voice-primary">{voiceConfig[voiceState].label}</p>
             <p className="voice-secondary">{voiceConfig[voiceState].sub}</p>
           </div>
-
-          {/* Audio input device selector */}
-          {inputDevices.length > 0 && (
-            <div className="device-selector">
-              <select
-                value={selectedInputDevice}
-                onChange={async (e) => {
-                  const name = e.target.value;
-                  setSelectedInputDevice(name);
-                  try {
-                    await invoke("set_input_device", { device: name || null });
-                  } catch (err) {
-                    console.warn("[app] set_input_device failed:", err);
-                  }
-                }}
-                title="选择音频输入设备"
-              >
-                {inputDevices.map((d) => (
-                  <option key={d} value={d}>
-                    {d}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
 
           {/* Voice wave animation */}
           {isBusy && (

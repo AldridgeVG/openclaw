@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { AlertCircle, Loader2, Mic, MicOff, RefreshCw, Save, X } from "lucide-react";
+import { AlertCircle, Loader2, Mic, MicOff, RefreshCw, Save, Volume2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   type AsrConfig,
@@ -26,7 +26,7 @@ type Props = {
   onClose: () => void;
 };
 
-type Tab = "model" | "asr";
+type Tab = "model" | "audio_input" | "audio_output";
 
 export function ModelConfigPanel({ onClose }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>("model");
@@ -56,6 +56,13 @@ export function ModelConfigPanel({ onClose }: Props) {
   const wakeTestRecordingRef = useRef(false);
   const wakeTestUnlistenRef = useRef<UnlistenFn | null>(null);
 
+  // Audio device state
+  const [inputDevices, setInputDevices] = useState<string[]>([]);
+  const [selectedInputDevice, setSelectedInputDevice] = useState<string>("");
+  const [outputDevices, setOutputDevices] = useState<string[]>([]);
+  const [selectedOutputDevice, setSelectedOutputDevice] = useState<string>("");
+  const [devicesLoading, setDevicesLoading] = useState(false);
+
   useEffect(() => {
     Promise.all([getModelConfig(), Promise.resolve(getAsrConfig())])
       .then(([c, a]) => {
@@ -64,6 +71,35 @@ export function ModelConfigPanel({ onClose }: Props) {
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
+
+    // Load audio devices
+    setDevicesLoading(true);
+    (async () => {
+      try {
+        const [inputs, savedInput, outputs, savedOutput] = await Promise.all([
+          invoke<string[]>("list_input_devices"),
+          invoke<string | null>("get_input_device"),
+          invoke<string[]>("list_output_devices"),
+          invoke<string | null>("get_output_device"),
+        ]);
+        setInputDevices(inputs);
+        setOutputDevices(outputs);
+        if (savedInput) {
+          setSelectedInputDevice(savedInput);
+        } else if (inputs.length > 0) {
+          setSelectedInputDevice(inputs[0]);
+        }
+        if (savedOutput) {
+          setSelectedOutputDevice(savedOutput);
+        } else if (outputs.length > 0) {
+          setSelectedOutputDevice(outputs[0]);
+        }
+      } catch (err) {
+        console.warn("[config] failed to load devices:", err);
+      } finally {
+        setDevicesLoading(false);
+      }
+    })();
   }, []);
 
   // Cleanup test capture on unmount / close
@@ -332,17 +368,29 @@ export function ModelConfigPanel({ onClose }: Props) {
               模型配置
             </button>
             <button
-              className={`config-sidebar-tab ${activeTab === "asr" ? "active" : ""}`}
-              onClick={() => setActiveTab("asr")}
+              className={`config-sidebar-tab ${activeTab === "audio_input" ? "active" : ""}`}
+              onClick={() => setActiveTab("audio_input")}
             >
-              语音识别配置
+              音频输入
+            </button>
+            <button
+              className={`config-sidebar-tab ${activeTab === "audio_output" ? "active" : ""}`}
+              onClick={() => setActiveTab("audio_output")}
+            >
+              音频输出
             </button>
           </nav>
         </aside>
 
         <div className="config-content">
           <div className="config-header">
-            <h3>{activeTab === "model" ? "模型端点配置" : "语音识别配置"}</h3>
+            <h3>
+              {activeTab === "model"
+                ? "模型端点配置"
+                : activeTab === "audio_input"
+                  ? "音频输入配置"
+                  : "音频输出配置"}
+            </h3>
             <button className="icon-btn" onClick={onClose} title="关闭">
               <X size={18} />
             </button>
@@ -361,7 +409,7 @@ export function ModelConfigPanel({ onClose }: Props) {
           )}
 
           <div className="config-form">
-            {activeTab === "model" ? (
+            {activeTab === "model" && (
               <>
                 <div className="config-field">
                   <label>接口风格</label>
@@ -448,8 +496,49 @@ export function ModelConfigPanel({ onClose }: Props) {
                   </label>
                 </div>
               </>
-            ) : (
+            )}
+
+            {activeTab === "audio_input" && (
               <>
+                {/* Input device selector */}
+                <div className="config-section">
+                  <h4 className="config-section-title">音频输入设备</h4>
+                  <div className="config-field">
+                    {devicesLoading ? (
+                      <div className="config-loading-inline">
+                        <Loader2 size={16} className="spin" />
+                        <span>正在读取设备...</span>
+                      </div>
+                    ) : inputDevices.length > 0 ? (
+                      <select
+                        className="config-select"
+                        value={selectedInputDevice}
+                        onChange={async (e) => {
+                          const name = e.target.value;
+                          setSelectedInputDevice(name);
+                          try {
+                            await invoke("set_input_device", { device: name || null });
+                            setSuccess("输入设备已切换");
+                            setTimeout(() => setSuccess(""), 2000);
+                          } catch (err) {
+                            setError(`切换设备失败: ${String(err)}`);
+                          }
+                        }}
+                      >
+                        {inputDevices.map((d) => (
+                          <option key={d} value={d}>
+                            {d}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <p className="config-test-note">未检测到音频输入设备</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="config-divider" />
+
                 <div className="config-field">
                   <label>ASR 提供商</label>
                   <div className="config-segmented config-segmented-4">
@@ -688,6 +777,66 @@ export function ModelConfigPanel({ onClose }: Props) {
                 </div>
               </>
             )}
+
+            {activeTab === "audio_output" && (
+              <>
+                <div className="config-section">
+                  <h4 className="config-section-title">音频输出设备</h4>
+                  <div className="config-field">
+                    {devicesLoading ? (
+                      <div className="config-loading-inline">
+                        <Loader2 size={16} className="spin" />
+                        <span>正在读取设备...</span>
+                      </div>
+                    ) : outputDevices.length > 0 ? (
+                      <select
+                        className="config-select"
+                        value={selectedOutputDevice}
+                        onChange={async (e) => {
+                          const name = e.target.value;
+                          setSelectedOutputDevice(name);
+                          try {
+                            await invoke("set_output_device", { device: name || null });
+                            setSuccess("输出设备已切换");
+                            setTimeout(() => setSuccess(""), 2000);
+                          } catch (err) {
+                            setError(`切换设备失败: ${String(err)}`);
+                          }
+                        }}
+                      >
+                        {outputDevices.map((d) => (
+                          <option key={d} value={d}>
+                            {d}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <p className="config-test-note">未检测到音频输出设备</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="config-divider" />
+
+                <div className="config-test-section">
+                  <h4 className="config-section-title">输出测试</h4>
+                  <p className="config-test-hint">点击按钮播放测试音，确认当前输出设备是否正常。</p>
+                  <button
+                    className="voice-test-btn"
+                    onClick={async () => {
+                      try {
+                        await invoke("play_audio", { audioBase64: await generateTestTone() });
+                      } catch (err) {
+                        setError(`播放测试音失败: ${String(err)}`);
+                      }
+                    }}
+                  >
+                    <Volume2 size={18} />
+                    播放测试音
+                  </button>
+                </div>
+              </>
+            )}
           </div>
 
           <div className="config-actions">
@@ -726,4 +875,27 @@ function mergeBase64Chunks(chunks: string[]): Uint8Array {
     offset += a.length;
   }
   return merged;
+}
+
+/// Generate a short test tone (PCM16 mono 24kHz) as base64 string.
+async function generateTestTone(): Promise<string> {
+  const sampleRate = 24000;
+  const duration = 0.5;
+  const freq = 880;
+  const sampleCount = Math.floor(sampleRate * duration);
+  const bytes = new Uint8Array(sampleCount * 2);
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i < sampleCount; i++) {
+    const t = i / sampleRate;
+    const envelope =
+      Math.min(1, i / (sampleRate * 0.05)) * Math.min(1, (sampleCount - i) / (sampleRate * 0.05));
+    const sample = Math.sin(2 * Math.PI * freq * t) * envelope * 0.5;
+    const pcm16 = Math.max(-32768, Math.min(32767, Math.round(sample * 32767)));
+    view.setInt16(i * 2, pcm16, true);
+  }
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
 }

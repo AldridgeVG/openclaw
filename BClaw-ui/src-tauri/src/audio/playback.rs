@@ -18,8 +18,12 @@ impl PlaybackHandle {
 }
 
 /// Play PCM16 audio (little-endian, mono, 24kHz) encoded as base64.
-/// Automatically resamples to the default output device's supported sample rate.
-pub fn play_pcm16_base64(audio_base64: String) -> Result<PlaybackHandle, String> {
+/// Automatically resamples to the output device's supported sample rate.
+/// If `device_name` is None, uses the default output device.
+pub fn play_pcm16_base64(
+    audio_base64: String,
+    device_name: Option<String>,
+) -> Result<PlaybackHandle, String> {
     eprintln!("[audio] play_pcm16_base64, base64 len={}", audio_base64.len());
     let pcm_bytes = general_purpose::STANDARD
         .decode(audio_base64)
@@ -32,9 +36,21 @@ pub fn play_pcm16_base64(audio_base64: String) -> Result<PlaybackHandle, String>
     }
 
     let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| "No default output device available".to_string())?;
+    let device = if let Some(name) = device_name {
+        let mut found = None;
+        for d in host.output_devices().map_err(|e| e.to_string())? {
+            if let Ok(dname) = d.name() {
+                if dname == name {
+                    found = Some(d);
+                    break;
+                }
+            }
+        }
+        found.ok_or_else(|| format!("Output device '{}' not found", name))?
+    } else {
+        host.default_output_device()
+            .ok_or_else(|| "No default output device available".to_string())?
+    };
 
     eprintln!("[audio] playback device: {:?}", device.name());
 
