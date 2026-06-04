@@ -186,6 +186,10 @@ export class VoiceService {
         if (transcript.includes(asrConfig.wakeWord.wakeWord)) {
           console.log("[voice] wake word detected!");
           this.wakeCooldown = true;
+          // Play a short confirmation tone
+          await playWakeTone().catch((e) => console.warn("[voice] play tone failed:", e));
+          // Greeting confirmation before entering listening
+          this.callbacks.onTranscript?.("assistant", "在", true);
           await this.stopWakeWordListening();
           await this.startListening();
           return;
@@ -651,4 +655,53 @@ function writeString(view: DataView, offset: number, str: string) {
   for (let i = 0; i < str.length; i++) {
     view.setUint8(offset + i, str.charCodeAt(i));
   }
+}
+
+/// Generate a short dual-beep confirmation tone (similar to Siri/Alexa wake sound)
+/// and play it via Rust audio playback. Returns immediately; playback is async.
+async function playWakeTone(): Promise<void> {
+  const sampleRate = 24000;
+  const beepDuration = 0.18; // 180ms per beep
+  const gapDuration = 0.06; // 60ms gap
+  const freq1 = 880; // A5
+  const freq2 = 1175; // D6 (approx)
+
+  const samplesPerBeep = Math.floor(beepDuration * sampleRate);
+  const gapSamples = Math.floor(gapDuration * sampleRate);
+  const totalSamples = samplesPerBeep * 2 + gapSamples;
+
+  const bytes = new Uint8Array(totalSamples * 2);
+  const view = new DataView(bytes.buffer);
+  let writeOffset = 0;
+
+  const writeBeep = (freq: number) => {
+    for (let i = 0; i < samplesPerBeep; i++) {
+      const t = i / sampleRate;
+      const attack = Math.min(1, i / (sampleRate * 0.02));
+      const decay = Math.min(1, (samplesPerBeep - i) / (sampleRate * 0.06));
+      const envelope = attack * decay;
+      const sample = Math.sin(2 * Math.PI * freq * t) * envelope * 0.6;
+      const pcm16 = Math.max(-32768, Math.min(32767, Math.round(sample * 32767)));
+      view.setInt16(writeOffset, pcm16, true);
+      writeOffset += 2;
+    }
+  };
+
+  writeBeep(freq1);
+  // Gap (silence)
+  for (let i = 0; i < gapSamples; i++) {
+    view.setInt16(writeOffset, 0, true);
+    writeOffset += 2;
+  }
+  writeBeep(freq2);
+
+  // Safely encode Uint8Array to base64 without spread/stack issues
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const base64 = btoa(binary);
+  console.log("[voice] playWakeTone generated, base64 len=", base64.length);
+  await invoke("play_audio", { audioBase64: base64 });
+  console.log("[voice] playWakeTone invoked ok");
 }

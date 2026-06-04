@@ -4,53 +4,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
-use super::f32_to_pcm16_bytes;
+use super::{f32_to_pcm16_bytes, Resampler};
 
 #[derive(Clone, serde::Serialize)]
 struct CapturePayload {
     audio_base64: String,
     timestamp_ms: u64,
-}
-
-/// Simple linear-interpolation resampler that carries state across buffers.
-struct Resampler {
-    input_rate: f64,
-    output_rate: f64,
-    total_input: u64,
-}
-
-impl Resampler {
-    fn new(input_rate: f64, output_rate: f64) -> Self {
-        Self {
-            input_rate,
-            output_rate,
-            total_input: 0,
-        }
-    }
-
-    fn process(&mut self, input: &[f32], output: &mut Vec<f32>) {
-        let ratio = self.input_rate / self.output_rate;
-        let n = input.len();
-        let j_start = ((self.total_input as f64) / ratio).ceil() as u64;
-        let j_end = ((self.total_input as f64 + n as f64) / ratio).ceil() as u64;
-
-        for j in j_start..j_end {
-            let pos = j as f64 * ratio - self.total_input as f64;
-            let idx = pos as usize;
-            if idx >= n {
-                break;
-            }
-            let frac = (pos - idx as f64) as f32;
-            let sample = if idx + 1 < n {
-                input[idx] * (1.0 - frac) + input[idx + 1] * frac
-            } else {
-                input[idx]
-            };
-            output.push(sample);
-        }
-
-        self.total_input += n as u64;
-    }
 }
 
 /// Internal implementation that allows specifying the Tauri event name.

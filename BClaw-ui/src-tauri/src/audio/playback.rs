@@ -3,7 +3,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use super::{pcm16_bytes_to_f32, SAMPLE_RATE};
+use super::{pcm16_bytes_to_f32, Resampler, SAMPLE_RATE};
 
 pub struct PlaybackHandle {
     stream: cpal::Stream,
@@ -18,6 +18,7 @@ impl PlaybackHandle {
 }
 
 /// Play PCM16 audio (little-endian, mono, 24kHz) encoded as base64.
+/// Automatically resamples to the default output device's supported sample rate.
 pub fn play_pcm16_base64(audio_base64: String) -> Result<PlaybackHandle, String> {
     eprintln!("[audio] play_pcm16_base64, base64 len={}", audio_base64.len());
     let pcm_bytes = general_purpose::STANDARD
@@ -37,11 +38,43 @@ pub fn play_pcm16_base64(audio_base64: String) -> Result<PlaybackHandle, String>
 
     eprintln!("[audio] playback device: {:?}", device.name());
 
-    let config = cpal::StreamConfig {
-        channels: 1,
-        sample_rate: cpal::SampleRate(SAMPLE_RATE),
-        buffer_size: cpal::BufferSize::Default,
+    let supported_config = device
+        .default_output_config()
+        .map_err(|e| format!("Failed to get default output config: {}", e))?;
+
+    let output_channels = supported_config.channels() as usize;
+    let output_sample_rate = supported_config.sample_rate().0;
+    eprintln!(
+        "[audio] output supported config: {} channels @ {} Hz",
+        output_channels, output_sample_rate
+    );
+
+    // Resample to output device rate if necessary
+    let samples = if output_sample_rate != SAMPLE_RATE {
+        eprintln!(
+            "[audio] resampling from {} Hz to {} Hz",
+            SAMPLE_RATE, output_sample_rate
+        );
+        let mut resampler = Resampler::new(SAMPLE_RATE as f64, output_sample_rate as f64);
+        let mut resampled = Vec::new();
+        resampler.process(&samples, &mut resampled);
+        resampled
+    } else {
+        samples
     };
+
+    // Expand mono to interleaved multi-channel if device requires more than 1 channel
+    let samples: Vec<f32> = if output_channels == 1 {
+        samples
+    } else {
+        samples
+            .iter()
+            .flat_map(|&s| std::iter::repeat(s).take(output_channels))
+            .collect()
+    };
+
+    let config: cpal::StreamConfig = supported_config.into();
+    eprintln!("[audio] output stream config: {:?}", config);
 
     let samples_arc = Arc::new(samples);
     let read_index = Arc::new(AtomicUsize::new(0));
