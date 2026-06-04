@@ -27,6 +27,7 @@ bzip2 = { version = "0.4", optional = true }
 [features]
 default = ["local-asr"]
 local-asr = ["sherpa-onnx", "tar", "bzip2"]
+dev-skills = []
 
 [profile.dev]
 opt-level = 0

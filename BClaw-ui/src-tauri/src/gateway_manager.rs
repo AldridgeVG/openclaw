@@ -368,10 +368,22 @@ fn get_openclaw_state_dir() -> Result<PathBuf, String> {
 }
 
 fn get_bundled_skills_dir() -> Result<PathBuf, String> {
+    // Determine which skill environment to use:
+    // 1. Compile-time feature "dev-skills"
+    // 2. Runtime BCLAW_ENV environment variable
+    let env_subdir = if cfg!(feature = "dev-skills") {
+        "dev"
+    } else if std::env::var("BCLAW_ENV").unwrap_or_default() == "dev" {
+        "dev"
+    } else {
+        "prod"
+    };
+
     // Dev: relative to src-tauri manifest dir
     let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
-        .join("skills");
+        .join("skills")
+        .join(env_subdir);
     if dev_path.exists() {
         return Ok(dev_path);
     }
@@ -380,13 +392,13 @@ fn get_bundled_skills_dir() -> Result<PathBuf, String> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
             // NSIS installer typically places exe next to resources/
-            let prod_path = exe_dir.join("resources").join("skills");
+            let prod_path = exe_dir.join("resources").join("skills").join(env_subdir);
             if prod_path.exists() {
                 return Ok(prod_path);
             }
             // Or one level up (e.g. target/release/ on Windows)
             if let Some(parent) = exe_dir.parent() {
-                let alt_path = parent.join("resources").join("skills");
+                let alt_path = parent.join("resources").join("skills").join(env_subdir);
                 if alt_path.exists() {
                     return Ok(alt_path);
                 }

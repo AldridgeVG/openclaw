@@ -1,25 +1,25 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { X, Save, RefreshCw, AlertCircle, Mic, MicOff, Loader2 } from "lucide-react";
-import { useState, useEffect, useRef } from "react";
+import { AlertCircle, Loader2, Mic, MicOff, RefreshCw, Save, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import {
-  getAsrConfig,
-  setAsrConfig as saveAsrConfig,
   type AsrConfig,
   type AsrProvider,
   DEFAULT_ASR_CONFIG,
-  SILICONFLOW_ASR_CONFIG,
-  OPENAI_REALTIME_ASR_CONFIG,
+  getAsrConfig,
   LOCAL_PARAFORMER_CONFIG,
+  OPENAI_REALTIME_ASR_CONFIG,
+  setAsrConfig as saveAsrConfig,
+  SILICONFLOW_ASR_CONFIG,
 } from "./asr-config";
 import {
-  getModelConfig,
-  setModelConfig,
-  restartGateway,
-  type ModelConfig,
-  type ProviderType,
   DEFAULT_ANTHROPIC_CONFIG,
   DEFAULT_OPENAI_CONFIG,
+  getModelConfig,
+  type ModelConfig,
+  type ProviderType,
+  restartGateway,
+  setModelConfig,
 } from "./model-config";
 
 type Props = {
@@ -350,6 +350,12 @@ export function ModelConfigPanel({ onClose }: Props) {
                   <label>ASR 提供商</label>
                   <div className="config-segmented config-segmented-4">
                     <button
+                      className={asrConfig.provider === "local-paraformer" ? "active" : ""}
+                      onClick={() => handleAsrProviderChange("local-paraformer")}
+                    >
+                      本地 Paraformer
+                    </button>
+                    <button
                       className={asrConfig.provider === "siliconflow" ? "active" : ""}
                       onClick={() => handleAsrProviderChange("siliconflow")}
                     >
@@ -360,12 +366,6 @@ export function ModelConfigPanel({ onClose }: Props) {
                       onClick={() => handleAsrProviderChange("openai-realtime")}
                     >
                       OpenAI Realtime
-                    </button>
-                    <button
-                      className={asrConfig.provider === "local-paraformer" ? "active" : ""}
-                      onClick={() => handleAsrProviderChange("local-paraformer")}
-                    >
-                      本地 Paraformer
                     </button>
                     <button
                       className={asrConfig.provider === "none" ? "active" : ""}

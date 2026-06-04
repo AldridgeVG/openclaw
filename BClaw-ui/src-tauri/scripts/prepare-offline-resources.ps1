@@ -1,5 +1,15 @@
 # Prepare offline bundled resources for BClaw
 # Run this before building the Tauri app for fully offline deployment
+#
+# Usage:
+#   .\prepare-offline-resources.ps1              # Default: prod skills
+#   .\prepare-offline-resources.ps1 -Env dev     # Use dev skills
+#   .\prepare-offline-resources.ps1 -Env prod    # Use prod skills
+
+param(
+    [ValidateSet("prod", "dev")]
+    [string]$Env = "prod"
+)
 
 $ErrorActionPreference = "Stop"
 $ResourcesDir = Join-Path $PSScriptRoot ".." "resources"
@@ -107,10 +117,33 @@ if (Test-Path $OpenclawMjs) {
     }
 }
 
+# ── 3. Prepare skills for target environment ────────────────
+$SkillsSource = Join-Path $ResourcesDir "skills" $Env
+$SkillsPack = Join-Path $ResourcesDir "skills" ".pack"
+
+if (Test-Path $SkillsSource) {
+    Write-Step "Preparing skills for environment '$Env' ..."
+    if (Test-Path $SkillsPack) {
+        Remove-Item -Recurse -Force $SkillsPack
+    }
+    New-Item -ItemType Directory -Force -Path $SkillsPack | Out-Null
+    Copy-Item -Path (Join-Path $SkillsSource "*") -Destination $SkillsPack -Recurse -Force
+    Write-Step "Skills staged at $SkillsPack"
+} else {
+    Write-Warning "Skills directory not found: $SkillsSource"
+}
+
 # ── Summary ─────────────────────────────────────────────────
 Write-Host ""
 Write-Host "Offline resources ready!" -ForegroundColor Green
 Write-Host "  Node.js:  $NodeExe"
 Write-Host "  openclaw: $OpenclawMjs"
+if (Test-Path $SkillsPack) {
+    Write-Host "  skills:   $SkillsPack (env=$Env)"
+}
 Write-Host ""
 Write-Host "Next step: run 'npm run tauri build' to create the installer."
+Write-Host ""
+Write-Host "NOTE: To bundle ONLY the '$Env' skills, update tauri.conf.json:" -ForegroundColor Yellow
+Write-Host '  "resources/skills/.pack": "skills"' -ForegroundColor Yellow
+Write-Host "Or keep the default 'resources/skills' to include both dev and prod at runtime." -ForegroundColor DarkGray

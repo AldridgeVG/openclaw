@@ -107,6 +107,7 @@ BClaw-ui/src-tauri/resources/node/*
 !BClaw-ui/src-tauri/resources/node/.gitkeep
 BClaw-ui/src-tauri/resources/openclaw/*
 !BClaw-ui/src-tauri/resources/openclaw/.gitkeep
+BClaw-ui/src-tauri/resources/skills/.pack/
 # Exception: oc-path real-world test fixtures need to be tracked even
 # though the bare names match the local-untracked rule above.
 !extensions/oc-path/src/oc-path/tests/fixtures/real/IDENTITY.md
