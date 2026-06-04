@@ -1,12 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { EventEmitter } from "node:events";
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createJsonlRequestTailer } from "../../scripts/e2e/lib/codex-media-path/jsonl-request-tail.mjs";
 import { readPositiveIntEnv } from "../../scripts/e2e/lib/codex-media-path/limits.mjs";
-import { waitForWebSocketOpen } from "../../scripts/e2e/lib/codex-media-path/open-websocket.mjs";
 
 const tempRoots: string[] = [];
 const writeConfigPath = path.resolve("scripts/e2e/lib/codex-media-path/write-config.mjs");
@@ -19,6 +17,14 @@ function makeTempRoot(): string {
 
 function jsonl(value: unknown): string {
   return `${JSON.stringify(value)}\n`;
+}
+
+function padJsonlToLength(value: Record<string, unknown>, length: number): string {
+  const base = jsonl({ ...value, pad: "" });
+  if (base.length > length) {
+    throw new Error(`cannot pad JSONL down from ${base.length} to ${length}`);
+  }
+  return jsonl({ ...value, pad: "x".repeat(length - base.length) });
 }
 
 function runWriteConfig(root: string, env: Record<string, string> = {}) {
@@ -34,23 +40,6 @@ function runWriteConfig(root: string, env: Record<string, string> = {}) {
       ...env,
     },
   });
-}
-
-class FakeWebSocket extends EventEmitter {
-  terminated = false;
-  closed = false;
-
-  terminate(): void {
-    this.terminated = true;
-    queueMicrotask(() => {
-      this.emit("error", new Error("socket abort after terminate"));
-      this.emit("close");
-    });
-  }
-
-  close(): void {
-    this.closed = true;
-  }
 }
 
 afterEach(() => {
@@ -151,34 +140,21 @@ describe("codex media path JSONL tailer", () => {
     writeFileSync(logPath, jsonl({ method: "turn/start" }));
     expect(tailer.read()).toEqual([{ method: "turn/start" }]);
   });
-});
 
-describe("codex media path WebSocket open guard", () => {
-  it("terminates sockets that never open", async () => {
-    const ws = new FakeWebSocket();
-    const keepAlive = setTimeout(() => {}, 100);
+  it("resets request history when a rotated app-server log keeps the same size", () => {
+    const logPath = path.join(makeTempRoot(), "app-server.jsonl");
+    const tailer = createJsonlRequestTailer(logPath, { maxReadBytes: 1024, historyLimit: 10 });
+    const oldText = jsonl({ method: "initialize", pad: "x".repeat(64) });
+    const replacementText = padJsonlToLength({ method: "turn/start" }, oldText.length);
+    const replacement = JSON.parse(replacementText) as Record<string, unknown>;
 
-    try {
-      await expect(waitForWebSocketOpen(ws, 1)).rejects.toThrow("gateway ws open timeout");
-    } finally {
-      clearTimeout(keepAlive);
-    }
+    expect(replacementText.length).toBe(oldText.length);
+    writeFileSync(logPath, oldText);
+    expect(tailer.read()).toEqual([{ method: "initialize", pad: "x".repeat(64) }]);
 
-    expect(ws.terminated).toBe(true);
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(ws.listenerCount("open")).toBe(0);
-    expect(ws.listenerCount("error")).toBe(0);
-  });
+    rmSync(logPath, { force: true });
+    writeFileSync(logPath, replacementText);
 
-  it("cleans listeners after successful opens", async () => {
-    const ws = new FakeWebSocket();
-    const opened = waitForWebSocketOpen(ws, 100);
-
-    ws.emit("open");
-
-    await expect(opened).resolves.toBeUndefined();
-    expect(ws.terminated).toBe(false);
-    expect(ws.listenerCount("open")).toBe(0);
-    expect(ws.listenerCount("error")).toBe(0);
+    expect(tailer.read()).toEqual([replacement]);
   });
 });

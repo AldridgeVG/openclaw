@@ -1,4 +1,4 @@
-import { isRecord } from "../shared/record-coerce.js";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type {
   DocumentExtractorPlugin,
   PluginDocumentExtractorEntry,
@@ -75,6 +75,7 @@ function collectExtractorFactories(mod: Record<string, unknown>): {
   return { extractors, errors };
 }
 
+/** Loads document extractor entries from a bundled plugin public artifact module. */
 export function loadBundledDocumentExtractorEntriesFromDir(params: {
   dirName: string;
   pluginId: string;

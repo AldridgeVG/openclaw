@@ -144,6 +144,7 @@ const config = {
       entry: rootEntries,
       ignoreDependencies: [
         "@openclaw/*",
+        "file-type",
         "playwright-core",
         "sqlite-vec",
         "tree-sitter-bash",
@@ -157,7 +158,15 @@ const config = {
       ],
     },
     ui: {
-      entry: ["index.html!", "src/main.ts!", "vite.config.ts!", "vitest*.ts!"],
+      entry: [
+        "index.html!",
+        "src/main.ts!",
+        "src/ui/browser-redact.ts!",
+        "vite.config.ts!",
+        "vitest*.ts!",
+      ],
+      // Workboard lazy-loads Three.js at runtime; Knip's dependency pass misses it.
+      ignoreDependencies: ["three"],
       project: ["src/**/*.{ts,tsx}!"],
     },
     "packages/sdk": {
@@ -175,6 +184,31 @@ const config = {
     "packages/gateway-protocol": {
       entry: ["src/index.ts!", "src/schema.ts!"],
       project: ["src/**/*.ts!"],
+    },
+    "packages/net-policy": {
+      entry: ["src/index.ts!", "src/ip.ts!"],
+      project: ["src/**/*.ts!"],
+    },
+    "packages/markdown-core": {
+      entry: ["src/*.ts!"],
+      project: ["src/**/*.ts!"],
+    },
+    "packages/media-core": {
+      entry: ["src/*.ts!"],
+      project: ["src/**/*.ts!"],
+    },
+    "packages/acp-core": {
+      entry: ["src/*.ts!"],
+      project: ["src/**/*.ts!"],
+    },
+    "packages/terminal-core": {
+      entry: ["src/*.ts!"],
+      project: ["src/**/*.ts!"],
+    },
+    "packages/speech-core": {
+      entry: ["api.ts!", "runtime-api.ts!", "speaker.ts!", "voice-models.ts!"],
+      project: ["**/*.ts!"],
+      ignoreDependencies: ["openclaw"],
     },
     "packages/*": {
       entry: ["index.js!", "scripts/postinstall.js!"],

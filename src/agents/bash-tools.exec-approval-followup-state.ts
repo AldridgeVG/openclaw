@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { normalizeOptionalString } from "../shared/string-coerce.js";
+import {
+  isFutureDateTimestampMs,
+  resolveExpiresAtMsFromDurationMs,
+} from "@openclaw/normalization-core/number-coercion";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { ExecElevatedDefaults } from "./bash-tools.exec-types.js";
 
+// Short-lived in-memory handoff state for exec approval follow-up turns. The
+// handoff carries elevated defaults across the approval response without
+// persisting operator approval state longer than the TTL.
 const EXEC_APPROVAL_FOLLOWUP_IDEMPOTENCY_PREFIX = "exec-approval-followup:";
 const EXEC_APPROVAL_FOLLOWUP_IDEMPOTENCY_NONCE_MARKER = ":nonce:";
 const EXEC_APPROVAL_FOLLOWUP_RUNTIME_HANDOFF_TTL_MS = 5 * 60 * 1000;
@@ -56,12 +63,13 @@ function cloneExecApprovalFollowupRuntimeHandoff(
 
 function pruneExpiredExecApprovalFollowupRuntimeHandoffs(nowMs: number): void {
   for (const [handoffId, entry] of execApprovalFollowupRuntimeHandoffs) {
-    if (entry.expiresAtMs <= nowMs) {
+    if (!isFutureDateTimestampMs(entry.expiresAtMs, { nowMs })) {
       execApprovalFollowupRuntimeHandoffs.delete(handoffId);
     }
   }
 }
 
+/** Build the idempotency key used for an exec approval follow-up. */
 export function buildExecApprovalFollowupIdempotencyKey(params: {
   approvalId: string;
   nonce?: string;
@@ -71,6 +79,7 @@ export function buildExecApprovalFollowupIdempotencyKey(params: {
   return nonce ? `${base}${EXEC_APPROVAL_FOLLOWUP_IDEMPOTENCY_NONCE_MARKER}${nonce}` : base;
 }
 
+/** Parse the approval id embedded in a follow-up idempotency key. */
 export function parseExecApprovalFollowupApprovalId(idempotencyKey: string): string | undefined {
   const normalized = normalizeOptionalString(idempotencyKey);
   if (!normalized?.startsWith(EXEC_APPROVAL_FOLLOWUP_IDEMPOTENCY_PREFIX)) {
@@ -81,6 +90,7 @@ export function parseExecApprovalFollowupApprovalId(idempotencyKey: string): str
   return normalizeOptionalString(nonceMarker >= 0 ? body.slice(0, nonceMarker) : body);
 }
 
+/** Register a short-lived exec approval handoff for the next follow-up turn. */
 export function registerExecApprovalFollowupRuntimeHandoff(params: {
   approvalId: string;
   sessionKey: string;
@@ -94,6 +104,13 @@ export function registerExecApprovalFollowupRuntimeHandoff(params: {
   }
   const nowMs = params.nowMs ?? Date.now();
   pruneExpiredExecApprovalFollowupRuntimeHandoffs(nowMs);
+  const expiresAtMs = resolveExpiresAtMsFromDurationMs(
+    EXEC_APPROVAL_FOLLOWUP_RUNTIME_HANDOFF_TTL_MS,
+    { nowMs },
+  );
+  if (expiresAtMs === undefined) {
+    return undefined;
+  }
   const handoffId = randomUUID();
   const idempotencyKey = buildExecApprovalFollowupIdempotencyKey({
     approvalId,
@@ -105,11 +122,12 @@ export function registerExecApprovalFollowupRuntimeHandoff(params: {
     sessionKey,
     idempotencyKey,
     bashElevated: cloneExecElevatedDefaults(params.bashElevated),
-    expiresAtMs: nowMs + EXEC_APPROVAL_FOLLOWUP_RUNTIME_HANDOFF_TTL_MS,
+    expiresAtMs,
   });
   return { handoffId, idempotencyKey };
 }
 
+/** Consume a matching handoff once, validating approval/session/idempotency data. */
 export function consumeExecApprovalFollowupRuntimeHandoff(params: {
   handoffId?: string;
   approvalId?: string;
@@ -129,7 +147,7 @@ export function consumeExecApprovalFollowupRuntimeHandoff(params: {
   if (!entry) {
     return undefined;
   }
-  if (entry.expiresAtMs <= nowMs) {
+  if (!isFutureDateTimestampMs(entry.expiresAtMs, { nowMs })) {
     execApprovalFollowupRuntimeHandoffs.delete(handoffId);
     return undefined;
   }
@@ -139,12 +157,15 @@ export function consumeExecApprovalFollowupRuntimeHandoff(params: {
     entry.idempotencyKey !== idempotencyKey ||
     entry.sessionKey !== sessionKey
   ) {
+    // Handoffs are single-session capabilities; mismatched follow-up metadata
+    // must not consume or expose the stored elevated defaults.
     return undefined;
   }
   execApprovalFollowupRuntimeHandoffs.delete(handoffId);
   return cloneExecApprovalFollowupRuntimeHandoff(entry);
 }
 
+/** Clear exec approval follow-up handoffs between tests. */
 export function resetExecApprovalFollowupRuntimeHandoffsForTests(): void {
   execApprovalFollowupRuntimeHandoffs.clear();
 }

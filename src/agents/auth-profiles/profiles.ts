@@ -1,7 +1,10 @@
-import { normalizeStringEntries } from "../../shared/string-normalization.js";
+import {
+  findNormalizedProviderKey,
+  normalizeProviderId,
+} from "@openclaw/model-catalog-core/provider-id";
+import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
 import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
-import { findNormalizedProviderKey, normalizeProviderId } from "../provider-id.js";
 import { dedupeProfileIds, listProfilesForProvider } from "./profile-list.js";
 import {
   ensureAuthProfileStoreForLocalUpdate,
@@ -11,6 +14,23 @@ import {
 import type { AuthProfileCredential, AuthProfileStore, ProfileUsageStats } from "./types.js";
 export { dedupeProfileIds, listProfilesForProvider } from "./profile-list.js";
 
+// Auth profile order/lastGood keys may be stored as aliases. Resolve through
+// auth provider normalization before updating per-provider state.
+function findProviderAuthStateKey(
+  entries: Record<string, unknown> | undefined,
+  providerKey: string,
+): string | undefined {
+  if (!entries) {
+    return undefined;
+  }
+  const normalizedProviderKey = resolveProviderIdForAuth(providerKey);
+  return Object.keys(entries).find(
+    (key) => resolveProviderIdForAuth(key) === normalizedProviderKey,
+  );
+}
+
+// Successful auth clears transient failure/cooldown/disable state while keeping
+// unrelated metadata and updating lastUsed for round-robin ordering.
 function resetSuccessfulUsageStats(
   existing: ProfileUsageStats | undefined,
   lastUsed: number,
@@ -41,6 +61,7 @@ function updateSuccessfulUsageStatsEntry(
   store.usageStats[profileId] = resetSuccessfulUsageStats(store.usageStats[profileId], lastUsed);
 }
 
+/** Sets or clears explicit auth profile order for a provider. */
 export async function setAuthProfileOrder(params: {
   agentDir?: string;
   provider: string;
@@ -71,24 +92,45 @@ export async function setAuthProfileOrder(params: {
   });
 }
 
+/** Promotes one auth profile to the front of a provider order. */
 export async function promoteAuthProfileInOrder(params: {
   agentDir?: string;
   provider: string;
   profileId: string;
+  createIfMissing?: boolean;
+  createFromOrder?: string[];
 }): Promise<AuthProfileStore | null> {
   const providerKey = resolveProviderIdForAuth(params.provider);
   return await updateAuthProfileStoreWithLock({
     agentDir: params.agentDir,
+    ...(params.createFromOrder
+      ? { saveOptions: { preserveOrderProfileIds: params.createFromOrder } }
+      : {}),
     updater: (store) => {
       const profile = store.profiles[params.profileId];
       if (!profile || resolveProviderIdForAuth(profile.provider) !== providerKey) {
         return false;
       }
       const orderKey =
-        findNormalizedProviderKey(store.order, providerKey) ?? normalizeProviderId(providerKey);
+        findProviderAuthStateKey(store.order, providerKey) ??
+        findNormalizedProviderKey(store.order, providerKey) ??
+        normalizeProviderId(providerKey);
       const existing = store.order?.[orderKey];
       if (!existing || existing.length === 0) {
-        return false;
+        if (!params.createIfMissing) {
+          return false;
+        }
+        const providerProfiles = dedupeProfileIds(
+          params.createFromOrder !== undefined
+            ? params.createFromOrder
+            : listProfilesForProvider(store, providerKey),
+        );
+        const next = dedupeProfileIds([
+          params.profileId,
+          ...providerProfiles.filter((profileId) => profileId !== params.profileId),
+        ]);
+        store.order = { ...store.order, [orderKey]: next };
+        return true;
       }
       const next = dedupeProfileIds([
         params.profileId,
@@ -106,6 +148,8 @@ export async function promoteAuthProfileInOrder(params: {
   });
 }
 
+// Upsert paths normalize literal secret strings but preserve SecretRef-backed
+// credentials for the secret resolver.
 function normalizeAuthProfileCredential(credential: AuthProfileCredential): AuthProfileCredential {
   if (credential.type === "api_key") {
     if (typeof credential.key !== "string") {
@@ -129,6 +173,7 @@ function normalizeAuthProfileCredential(credential: AuthProfileCredential): Auth
   return credential;
 }
 
+/** Upserts an auth profile immediately into the local store. */
 export function upsertAuthProfile(params: {
   profileId: string;
   credential: AuthProfileCredential;
@@ -143,6 +188,7 @@ export function upsertAuthProfile(params: {
   });
 }
 
+/** Upserts an auth profile under the auth store lock. */
 export async function upsertAuthProfileWithLock(params: {
   profileId: string;
   credential: AuthProfileCredential;
@@ -162,6 +208,7 @@ export async function upsertAuthProfileWithLock(params: {
   });
 }
 
+/** Removes all auth profiles and related state for a provider. */
 export async function removeProviderAuthProfilesWithLock(params: {
   provider: string;
   agentDir?: string;
@@ -205,6 +252,7 @@ export async function removeProviderAuthProfilesWithLock(params: {
   });
 }
 
+/** Clears lastGood for a provider when it points at the supplied profile. */
 export async function clearLastGoodProfileWithLock(params: {
   provider: string;
   profileId: string;
@@ -214,10 +262,11 @@ export async function clearLastGoodProfileWithLock(params: {
   return await updateAuthProfileStoreWithLock({
     agentDir: params.agentDir,
     updater: (store) => {
-      if (store.lastGood?.[providerKey] !== params.profileId) {
+      const lastGoodKey = findProviderAuthStateKey(store.lastGood, providerKey);
+      if (!lastGoodKey || store.lastGood?.[lastGoodKey] !== params.profileId) {
         return false;
       }
-      delete store.lastGood[providerKey];
+      delete store.lastGood[lastGoodKey];
       if (Object.keys(store.lastGood).length === 0) {
         store.lastGood = undefined;
       }
@@ -226,6 +275,7 @@ export async function clearLastGoodProfileWithLock(params: {
   });
 }
 
+/** Marks an auth profile as successful and updates lastGood/usage state. */
 export async function markAuthProfileSuccess(params: {
   store: AuthProfileStore;
   provider: string;

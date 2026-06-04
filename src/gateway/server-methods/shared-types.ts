@@ -22,8 +22,12 @@ import type { BufferedAgentEvent } from "../server-chat-state.js";
 import type { DedupeEntry } from "../server-shared.js";
 import type { GatewayEventLoopHealth } from "../server/event-loop-health.js";
 
+/**
+ * Shared gateway request types used by every server-method module.
+ */
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
 
+/** Per-connection client metadata captured after the gateway handshake. */
 export type GatewayClient = {
   connect: ConnectParams;
   connId?: string;
@@ -36,9 +40,11 @@ export type GatewayClient = {
     allowModelOverride?: boolean;
     approvalRuntime?: boolean;
     pluginRuntimeOwnerId?: string;
+    agentRunTracking?: "plugin_subagent";
   };
 };
 
+/** Callback used by method handlers to emit one protocol response frame. */
 export type RespondFn = (
   ok: boolean,
   payload?: unknown,
@@ -46,6 +52,7 @@ export type RespondFn = (
   meta?: Record<string, unknown>,
 ) => void;
 
+/** Runtime services and mutable gateway state available to request handlers. */
 export type GatewayRequestContext = {
   deps: CliDeps;
   cron: CronServiceContract;
@@ -94,12 +101,16 @@ export type GatewayRequestContext = {
   chatDeltaLastBroadcastText: Map<string, string>;
   agentDeltaSentAt: Map<string, number>;
   bufferedAgentEvents: Map<string, BufferedAgentEvent>;
-  addChatRun: (sessionId: string, entry: { sessionKey: string; clientRunId: string }) => void;
+  clearChatRunState: (runId: string) => void;
+  addChatRun: (
+    sessionId: string,
+    entry: { sessionKey: string; agentId?: string; clientRunId: string },
+  ) => void;
   removeChatRun: (
     sessionId: string,
     clientRunId: string,
     sessionKey?: string,
-  ) => { sessionKey: string; clientRunId: string } | undefined;
+  ) => { sessionKey: string; agentId?: string; clientRunId: string } | undefined;
   subscribeSessionEvents: (connId: string) => void;
   unsubscribeSessionEvents: (connId: string) => void;
   subscribeSessionMessageEvents: (connId: string, sessionKey: string) => void;
@@ -138,6 +149,7 @@ export type GatewayRequestContext = {
   unavailableGatewayMethods?: ReadonlySet<string>;
 };
 
+/** Full dispatch context for raw request frames before params are normalized. */
 export type GatewayRequestOptions = {
   req: RequestFrame;
   client: GatewayClient | null;
@@ -147,6 +159,7 @@ export type GatewayRequestOptions = {
   methodRegistry?: GatewayMethodRegistryView;
 };
 
+/** Normalized method invocation options passed to registered handlers. */
 export type GatewayRequestHandlerOptions = {
   req: RequestFrame;
   params: Record<string, unknown>;
@@ -156,6 +169,8 @@ export type GatewayRequestHandlerOptions = {
   context: GatewayRequestContext;
 };
 
+/** Single gateway method implementation. */
 export type GatewayRequestHandler = (opts: GatewayRequestHandlerOptions) => Promise<void> | void;
 
+/** Registry fragment keyed by gateway protocol method name. */
 export type GatewayRequestHandlers = Record<string, GatewayRequestHandler>;

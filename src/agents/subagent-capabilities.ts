@@ -1,3 +1,8 @@
+import {
+  resolveIntegerOption,
+  resolveNonNegativeIntegerOption,
+} from "@openclaw/normalization-core/number-coercion";
+import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { DEFAULT_SUBAGENT_MAX_SPAWN_DEPTH } from "../config/agent-limits.js";
 import { loadSessionStore, resolveStorePath } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -6,7 +11,6 @@ import {
   isSubagentSessionKey,
   parseAgentSessionKey,
 } from "../routing/session-key.js";
-import { normalizeOptionalLowercaseString } from "../shared/string-coerce.js";
 import {
   normalizeInheritedToolAllowlist,
   normalizeInheritedToolDenylist,
@@ -14,6 +18,8 @@ import {
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 import { normalizeSubagentSessionKey } from "./subagent-session-key.js";
 
+// Subagent capability resolution for live and persisted sessions. Depth derives
+// defaults, while stored envelopes can override role/scope and inherited tools.
 export type SubagentSessionRole = "main" | "orchestrator" | "leaf";
 const SUBAGENT_SESSION_ROLES: readonly SubagentSessionRole[] = [
   "main",
@@ -58,6 +64,8 @@ function normalizeSubagentControlScope(value: unknown): SubagentControlScope | u
 }
 
 function shouldInspectStoredSubagentEnvelope(sessionKey: string): boolean {
+  // ACP session keys can represent resumed subagents only when their persisted
+  // envelope carries subagent metadata or points back to a subagent parent.
   return isSubagentSessionKey(sessionKey) || isAcpSessionKey(sessionKey);
 }
 
@@ -88,6 +96,8 @@ function findEntryBySessionId(
     return undefined;
   }
   for (const entry of Object.values(store)) {
+    // Older callers may know the session id but not the exact store key, so
+    // persisted entries are searchable by their normalized embedded sessionId.
     const candidateSessionId = normalizeSubagentSessionKey(entry?.sessionId);
     if (candidateSessionId === normalizedSessionId) {
       return entry;
@@ -141,15 +151,17 @@ export function resolveSubagentCapabilityStore(
   return readSessionStore(storePath);
 }
 
+/** Resolve depth-derived role/scope booleans for a subagent position. */
 function resolveSubagentRoleForDepth(params: {
   depth: number;
   maxSpawnDepth?: number;
 }): SubagentSessionRole {
-  const depth = Number.isInteger(params.depth) ? Math.max(0, params.depth) : 0;
-  const maxSpawnDepth =
-    typeof params.maxSpawnDepth === "number" && Number.isFinite(params.maxSpawnDepth)
-      ? Math.max(1, Math.floor(params.maxSpawnDepth))
-      : DEFAULT_SUBAGENT_MAX_SPAWN_DEPTH;
+  const depth = resolveNonNegativeIntegerOption(params.depth, 0);
+  const maxSpawnDepth = resolveIntegerOption(
+    params.maxSpawnDepth,
+    DEFAULT_SUBAGENT_MAX_SPAWN_DEPTH,
+    { min: 1 },
+  );
   if (depth <= 0) {
     return "main";
   }
@@ -161,10 +173,11 @@ function resolveSubagentControlScopeForRole(role: SubagentSessionRole): Subagent
 }
 
 export function resolveSubagentCapabilities(params: { depth: number; maxSpawnDepth?: number }) {
+  const depth = resolveNonNegativeIntegerOption(params.depth, 0);
   const role = resolveSubagentRoleForDepth(params);
   const controlScope = resolveSubagentControlScopeForRole(role);
   return {
-    depth: Math.max(0, Math.floor(params.depth)),
+    depth,
     role,
     controlScope,
     canSpawn: role === "main" || role === "orchestrator",
@@ -215,6 +228,8 @@ function isStoredSubagentEnvelopeSession(
   const parentStore = isSameAgentSessionStore(normalizedSessionKey, spawnedBy)
     ? params.store
     : undefined;
+  // Follow parent links across stored ACP envelopes to recover subagent identity
+  // for resumed sessions, while `visited` prevents malformed cycles.
   return isStoredSubagentEnvelopeSession(
     {
       sessionKey: spawnedBy,
@@ -225,6 +240,7 @@ function isStoredSubagentEnvelopeSession(
   );
 }
 
+/** Return true when a session key or persisted ACP envelope represents a subagent. */
 export function isSubagentEnvelopeSession(
   sessionKey: string | undefined | null,
   opts?: {
@@ -252,6 +268,10 @@ export function isSubagentEnvelopeSession(
   });
 }
 
+/**
+ * Resolve the effective subagent role/scope, combining stored envelope metadata
+ * with depth-derived fallback behavior.
+ */
 export function resolveStoredSubagentCapabilities(
   sessionKey: string | undefined | null,
   opts?: {
@@ -281,6 +301,8 @@ export function resolveStoredSubagentCapabilities(
       })
     : undefined;
   const depthStore = opts?.cfg && typeof entry?.spawnDepth !== "number" ? undefined : store;
+  // If config is available but the envelope lacks an explicit spawnDepth, let
+  // the depth helper read canonical persisted state instead of trusting a partial store.
   const depth = getSubagentDepthFromSessionStore(normalizedSessionKey, {
     cfg: opts?.cfg,
     store: depthStore,
@@ -302,6 +324,7 @@ export function resolveStoredSubagentCapabilities(
   };
 }
 
+/** Resolve inherited tool deny rules stored on a subagent envelope. */
 export function resolveStoredSubagentInheritedToolDenylist(
   sessionKey: string | undefined | null,
   opts?: {
@@ -322,6 +345,7 @@ export function resolveStoredSubagentInheritedToolDenylist(
   return normalizeInheritedToolDenylist(entry?.inheritedToolDeny);
 }
 
+/** Resolve inherited tool allow rules stored on a subagent envelope. */
 export function resolveStoredSubagentInheritedToolAllowlist(
   sessionKey: string | undefined | null,
   opts?: {

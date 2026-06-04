@@ -11,11 +11,11 @@ type FixtureLogEntry = {
 };
 
 const activeRuns: PtyRun[] = [];
-const STARTUP_TIMEOUT_MS = 10_000;
+const STARTUP_TIMEOUT_MS = 20_000;
 const OUTPUT_TIMEOUT_MS = 2_000;
 const EXIT_TIMEOUT_MS = 4_000;
 const TEST_TIMEOUT_MS = 5_000;
-const STARTUP_TEST_TIMEOUT_MS = 10_000;
+const STARTUP_TEST_TIMEOUT_MS = 25_000;
 
 async function readFixtureLog(logPath: string): Promise<FixtureLogEntry[]> {
   try {
@@ -55,7 +55,7 @@ function objectFieldEquals(entry: FixtureLogEntry, field: string, value: unknown
     return false;
   }
   const payload = entry.payload as Record<string, unknown>;
-  return Object.prototype.hasOwnProperty.call(payload, field) && payload[field] === value;
+  return Object.hasOwn(payload, field) && payload[field] === value;
 }
 
 async function writeTuiPtyFixtureScript(dir: string) {

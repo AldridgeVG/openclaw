@@ -7,6 +7,8 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+import { stripLeadingPackageManagerSeparator } from "./lib/arg-utils.mjs";
+import { readBoundedResponseText } from "./lib/bounded-response.mjs";
 
 const ISSUE_FILE_COUNTS = [
   ["memory/transcripts", 9394],
@@ -25,6 +27,8 @@ const ISSUE_MEMORY_FILE_COUNT = ISSUE_FILE_COUNTS.reduce((sum, [, count]) => sum
 const DEFAULT_FILE_COUNT = 512;
 const DEFAULT_MAX_WORKSPACE_REG_FDS = process.platform === "darwin" ? 8 : 64;
 export const GATEWAY_READY_OUTPUT_MAX_CHARS = 128 * 1024;
+export const MEMORY_SEARCH_RESPONSE_MAX_BYTES = 256 * 1024;
+export const MEMORY_SEARCH_PROBE_QUERY = "Top-level memory file";
 
 const SKIP_GATEWAY_ENV = {
   NODE_ENV: "test",
@@ -61,6 +65,28 @@ Options:
 }
 
 const NON_NEGATIVE_INTEGER_PATTERN = /^(0|[1-9]\d*)$/u;
+const ARGUMENT_FLAGS = new Set([
+  "--allow-non-darwin",
+  "--expect-leak",
+  "--files",
+  "--full",
+  "--help",
+  "--invoke-timeout-ms",
+  "--keep",
+  "--max-workspace-reg-fds",
+  "--min-leaked-fds",
+  "--mode",
+  "--output-dir",
+  "--report-only",
+  "--sample-delay-ms",
+  "--settle-delay-ms",
+]);
+
+function stripPackageManagerSeparatorForKnownFlags(argv) {
+  return argv[0] === "--" && ARGUMENT_FLAGS.has(argv[1])
+    ? stripLeadingPackageManagerSeparator(argv)
+    : argv;
+}
 
 export function readNumber(value, label) {
   const raw = String(value).trim();
@@ -93,6 +119,7 @@ function readPositiveNumberEnv(name, fallback) {
 }
 
 export function parseArgs(argv) {
+  const args = stripPackageManagerSeparatorForKnownFlags(argv);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const options = {
     fileCount: undefined,
@@ -107,9 +134,9 @@ export function parseArgs(argv) {
     allowNonDarwin: process.env.OPENCLAW_MEMORY_FD_REPRO_ALLOW_NON_DARWIN === "1",
   };
 
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    const next = argv[i + 1];
+  parseArgv: for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    const next = args[i + 1];
     const readValue = () => {
       if (!next) {
         throw new Error(`Missing value for ${arg}`);
@@ -120,7 +147,7 @@ export function parseArgs(argv) {
 
     switch (arg) {
       case "--":
-        break;
+        break parseArgv;
       case "--help":
         console.log(usage());
         process.exit(0);
@@ -196,7 +223,9 @@ function logStep(message) {
 }
 
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 async function getFreePort() {
@@ -249,15 +278,22 @@ function writeSyntheticWorkspace(workspaceDir, fileCount) {
   }
 }
 
-function writeConfig({ homeDir, workspaceDir, port, token }) {
+export function writeConfig({ homeDir, workspaceDir, port, token }) {
   const configDir = path.join(homeDir, ".openclaw");
   fs.mkdirSync(configDir, { recursive: true });
   const configPath = path.join(configDir, "openclaw.json");
+  const indexPath = path.join(configDir, "memory", "main.sqlite");
   const config = {
     agents: {
       defaults: {
         workspace: workspaceDir,
         memorySearch: {
+          provider: "none",
+          model: "",
+          store: {
+            path: indexPath,
+            vector: { enabled: false },
+          },
           sync: {
             watch: true,
             onSessionStart: false,
@@ -283,6 +319,37 @@ function writeConfig({ homeDir, workspaceDir, port, token }) {
   };
   fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
   return configPath;
+}
+
+function formatTail(text, maxChars = 4096) {
+  return text.length > maxChars ? text.slice(-maxChars) : text;
+}
+
+function preindexSyntheticMemory(env) {
+  logStep("preindex start");
+  const result = spawnSync(
+    process.execPath,
+    ["scripts/run-node.mjs", "memory", "index", "--force", "--agent", "main"],
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env,
+      maxBuffer: 10 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      [
+        `memory preindex failed with exit ${result.status ?? result.signal}`,
+        formatTail(result.stdout || ""),
+        formatTail(result.stderr || ""),
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    );
+  }
+  logStep("preindex complete");
 }
 
 export function updateGatewayReadyOutputState(
@@ -402,19 +469,16 @@ export async function stopGateway({ child, port }) {
 
 export async function stopGatewayWithRuntime({
   child,
+  childExitPollIntervalMs = 100,
+  childExitPolls = 50,
   port,
   findGatewayPidFn,
   killProcess,
   listenerSettleDelayMs = 500,
 }) {
   if (!hasChildExited(child)) {
-    child.kill("SIGINT");
-    for (let i = 0; i < 50; i += 1) {
-      if (hasChildExited(child)) {
-        break;
-      }
-      await sleep(100);
-    }
+    signalChild(child, "SIGINT");
+    await waitForChildExit(child, { intervalMs: childExitPollIntervalMs, polls: childExitPolls });
   }
   const listenerPid = findGatewayPidFn(port);
   if (listenerPid) {
@@ -429,6 +493,144 @@ export async function stopGatewayWithRuntime({
       } catch {}
     }
   }
+  if (!hasChildExited(child)) {
+    signalChild(child, "SIGKILL");
+    await waitForChildExit(child, { intervalMs: childExitPollIntervalMs, polls: childExitPolls });
+  }
+}
+
+export { readBoundedResponseText };
+
+function signalChild(child, signal) {
+  try {
+    child.kill(signal);
+  } catch {}
+}
+
+async function waitForChildExit(child, { intervalMs, polls }) {
+  for (let i = 0; i < polls; i += 1) {
+    if (hasChildExited(child)) {
+      return true;
+    }
+    await sleep(intervalMs);
+  }
+  return hasChildExited(child);
+}
+
+function parseJsonValue(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function readStringProperty(record, key) {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function parseToolTextContent(result) {
+  const content = Array.isArray(result?.content) ? result.content : [];
+  for (const entry of content) {
+    const text = entry?.type === "text" && typeof entry.text === "string" ? entry.text : null;
+    if (!text) {
+      continue;
+    }
+    const parsed = asRecord(parseJsonValue(text));
+    if (parsed) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+export function classifyMemorySearchInvokeResponse({ httpOk, status, bodyText }) {
+  const parsedBody = parseJsonValue(bodyText);
+  const body = asRecord(parsedBody);
+  if (!httpOk) {
+    const errorRecord = asRecord(body?.error);
+    return {
+      ok: false,
+      httpOk,
+      status,
+      gatewayOk: body?.ok === true ? true : body?.ok === false ? false : undefined,
+      error:
+        readStringProperty(errorRecord, "message") ??
+        readStringProperty(body, "error") ??
+        `memory_search HTTP request failed with status ${status}`,
+    };
+  }
+  if (!body) {
+    return {
+      ok: false,
+      httpOk,
+      status,
+      error: "memory_search response was not JSON",
+    };
+  }
+
+  const gatewayOk = body.ok === true ? true : body.ok === false ? false : undefined;
+  if (gatewayOk === false) {
+    const errorRecord = asRecord(body.error);
+    return {
+      ok: false,
+      httpOk,
+      status,
+      gatewayOk,
+      error:
+        readStringProperty(errorRecord, "message") ??
+        readStringProperty(body, "error") ??
+        "memory_search gateway invocation failed",
+    };
+  }
+
+  const result = asRecord(body.result);
+  const details = asRecord(result?.details);
+  const directResult = Array.isArray(result?.results) ? result : null;
+  const directBody =
+    Array.isArray(body.results) || body.disabled === true || body.unavailable === true
+      ? body
+      : null;
+  const payload = details ?? parseToolTextContent(result) ?? directResult ?? directBody;
+  if (!payload) {
+    return {
+      ok: false,
+      httpOk,
+      status,
+      gatewayOk,
+      error: "memory_search result payload missing or invalid",
+    };
+  }
+  const resultCount = Array.isArray(payload.results) ? payload.results.length : undefined;
+  const toolDisabled = payload.disabled === true;
+  const toolUnavailable = payload.unavailable === true;
+  const toolError = readStringProperty(payload, "error");
+  const ok = gatewayOk === true && !toolDisabled && !toolUnavailable && !toolError;
+
+  return {
+    ok,
+    httpOk,
+    status,
+    gatewayOk,
+    resultCount,
+    toolDisabled,
+    toolUnavailable,
+    ...(toolError ? { toolError } : {}),
+    ...(ok
+      ? {}
+      : {
+          error:
+            toolError ??
+            (toolDisabled || toolUnavailable
+              ? "memory_search returned disabled/unavailable"
+              : "memory_search result payload missing or invalid"),
+        }),
+  };
 }
 
 async function invokeMemorySearch({ port, token, timeoutMs }) {
@@ -445,7 +647,7 @@ async function invokeMemorySearch({ port, token, timeoutMs }) {
       body: JSON.stringify({
         tool: "memory_search",
         args: {
-          query: "FD-leak-probe-sentinel-xyzzy-nomatch",
+          query: MEMORY_SEARCH_PROBE_QUERY,
           maxResults: 1,
           corpus: "memory",
         },
@@ -453,10 +655,18 @@ async function invokeMemorySearch({ port, token, timeoutMs }) {
       }),
       signal: controller.signal,
     });
-    const text = await res.text();
-    return {
-      ok: res.ok,
+    const text = await readBoundedResponseText(
+      res,
+      "memory_search",
+      MEMORY_SEARCH_RESPONSE_MAX_BYTES,
+    );
+    const result = classifyMemorySearchInvokeResponse({
+      httpOk: res.ok,
       status: res.status,
+      bodyText: text,
+    });
+    return {
+      ...result,
       durationMs: Date.now() - startedAt,
       bodyPreview: text.slice(0, 500),
     };
@@ -519,24 +729,7 @@ async function main() {
     OPENCLAW_CONFIG_PATH: configPath,
     OPENCLAW_GATEWAY_TOKEN: token,
   };
-  const child = spawn(
-    process.execPath,
-    [
-      "scripts/run-node.mjs",
-      "gateway",
-      "run",
-      "--port",
-      String(port),
-      "--auth",
-      "token",
-      "--token",
-      token,
-      "--bind",
-      "loopback",
-      "--allow-unconfigured",
-    ],
-    { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"] },
-  );
+  let child;
 
   const summary = {
     generatedAt: new Date().toISOString(),
@@ -555,6 +748,25 @@ async function main() {
   };
 
   try {
+    preindexSyntheticMemory(env);
+    child = spawn(
+      process.execPath,
+      [
+        "scripts/run-node.mjs",
+        "gateway",
+        "run",
+        "--port",
+        String(port),
+        "--auth",
+        "token",
+        "--token",
+        token,
+        "--bind",
+        "loopback",
+        "--allow-unconfigured",
+      ],
+      { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"] },
+    );
     logStep(`workspace=${workspaceDir}`);
     logStep(`files=${options.fileCount} mode=${options.mode} port=${port}`);
     await waitForGatewayReady({ child, port, logPath, timeoutMs: 60_000 });
@@ -592,7 +804,9 @@ async function main() {
       throw new Error(summary.failure);
     }
   } finally {
-    await stopGateway({ child, port });
+    if (child) {
+      await stopGateway({ child, port });
+    }
     if (!options.keep) {
       fs.rmSync(rootDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     } else {
@@ -607,10 +821,12 @@ function isMainModule() {
 }
 
 if (isMainModule()) {
-  main().catch((error) => {
-    console.error(
-      `[memory-fd-repro] failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    process.exit(1);
-  });
+  main().catch(
+    /** @param {unknown} error */ (error) => {
+      console.error(
+        `[memory-fd-repro] failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      process.exit(1);
+    },
+  );
 }

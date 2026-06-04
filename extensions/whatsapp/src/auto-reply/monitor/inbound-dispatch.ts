@@ -654,7 +654,7 @@ export async function dispatchWhatsAppBufferedReply(params: {
     void statusReactionController.setThinking();
   }
 
-  const { queuedFinal, counts } = await dispatchReplyWithBufferedBlockDispatcher({
+  const dispatchResult = await dispatchReplyWithBufferedBlockDispatcher({
     ctx: params.context,
     cfg: params.cfg,
     replyResolver: params.replyResolver,
@@ -779,6 +779,10 @@ export async function dispatchWhatsAppBufferedReply(params: {
       },
     },
     replyOptions: {
+      // Message-tool-only unmentioned group turns have no automatic visible reply.
+      // Suppress composing there so silent background runs do not leak presence.
+      suppressTyping:
+        sourceRepliesAreToolOnly && params.msg.chatType === "group" && !params.msg.wasMentioned,
       disableBlockStreaming,
       ...(sourceReplyDeliveryMode ? { sourceReplyDeliveryMode } : {}),
       onModelSelected: params.onModelSelected,
@@ -794,7 +798,8 @@ export async function dispatchWhatsAppBufferedReply(params: {
         : {}),
     },
   });
-  const didQueueVisibleReply = hasVisibleInboundReplyDispatch({ queuedFinal, counts });
+  const didQueueVisibleReply = hasVisibleInboundReplyDispatch(dispatchResult);
+  const didDeliverVisibleReply = didSendReply || dispatchResult.observedReplyDelivery === true;
   if (!didQueueVisibleReply) {
     if (statusReactionController) {
       void finalizeWhatsAppStatusReaction({
@@ -815,8 +820,8 @@ export async function dispatchWhatsAppBufferedReply(params: {
   if (statusReactionController) {
     void finalizeWhatsAppStatusReaction({
       controller: statusReactionController,
-      outcome: didSendReply ? "done" : "error",
-      hasFinalResponse: didSendReply,
+      outcome: didDeliverVisibleReply ? "done" : "error",
+      hasFinalResponse: didDeliverVisibleReply,
       removeAckAfterReply,
       timing: statusReactionTiming,
     });
@@ -826,7 +831,7 @@ export async function dispatchWhatsAppBufferedReply(params: {
     params.groupHistories.set(params.groupHistoryKey, []);
   }
 
-  return didSendReply;
+  return didDeliverVisibleReply;
 }
 
 async function finalizeWhatsAppStatusReaction(params: {
@@ -839,7 +844,9 @@ async function finalizeWhatsAppStatusReaction(params: {
   if (params.outcome === "done") {
     await params.controller.setDone();
     if (params.removeAckAfterReply) {
-      await new Promise<void>((resolve) => setTimeout(resolve, params.timing.doneHoldMs));
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, params.timing.doneHoldMs);
+      });
       await params.controller.clear();
     } else {
       await params.controller.restoreInitial();
@@ -849,7 +856,9 @@ async function finalizeWhatsAppStatusReaction(params: {
   await params.controller.setError();
   if (params.hasFinalResponse) {
     if (params.removeAckAfterReply) {
-      await new Promise<void>((resolve) => setTimeout(resolve, params.timing.errorHoldMs));
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, params.timing.errorHoldMs);
+      });
       await params.controller.clear();
     } else {
       await params.controller.restoreInitial();
@@ -857,7 +866,9 @@ async function finalizeWhatsAppStatusReaction(params: {
     return;
   }
   if (params.removeAckAfterReply) {
-    await new Promise<void>((resolve) => setTimeout(resolve, params.timing.errorHoldMs));
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, params.timing.errorHoldMs);
+    });
   }
   await params.controller.restoreInitial();
 }

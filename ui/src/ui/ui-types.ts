@@ -7,6 +7,11 @@ export type ChatAttachment = {
   sizeBytes?: number;
 };
 
+export type ChatQueueSkillWorkshopRevision = {
+  proposalId: string;
+  agentId?: string;
+};
+
 export type ChatQueueItem = {
   id: string;
   text: string;
@@ -20,8 +25,17 @@ export type ChatQueueItem = {
   sendAttempts?: number;
   sendError?: string;
   sendRunId?: string;
-  sendState?: "sending" | "waiting-reconnect" | "failed";
+  sendState?: "waiting-model" | "sending" | "waiting-reconnect" | "failed";
+  sendSubmittedAtMs?: number;
+  sendRequestStartedAtMs?: number;
   sessionKey?: string;
+  agentId?: string;
+  skillWorkshopRevision?: ChatQueueSkillWorkshopRevision;
+};
+
+export type ChatSessionRefreshTarget = {
+  sessionKey: string;
+  agentId?: string;
 };
 
 export const CRON_CHANNEL_LAST = "last";

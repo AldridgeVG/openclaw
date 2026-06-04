@@ -117,11 +117,6 @@ export function createTelegramDraftStream(params: {
   let previewRevision = 0;
   let generation = 0;
   let deliveredTextOffset = 0;
-  let resetStreamToNewMessage: (options?: {
-    keepFinal?: boolean;
-    keepPending?: boolean;
-    resetOffset?: boolean;
-  }) => void;
   type PreviewSendParams = {
     renderedText: string;
     renderedParseMode: "HTML" | undefined;
@@ -182,6 +177,7 @@ export function createTelegramDraftStream(params: {
         textSnapshot: renderedText,
         parseMode: renderedParseMode,
         visibleSinceMs,
+        retain: true,
       });
       return true;
     }
@@ -316,7 +312,11 @@ export function createTelegramDraftStream(params: {
     streamState.final = true;
   };
 
-  resetStreamToNewMessage = (options) => {
+  const resetStreamToNewMessage: (options?: {
+    keepFinal?: boolean;
+    keepPending?: boolean;
+    resetOffset?: boolean;
+  }) => void = (options) => {
     streamState.stopped = false;
     streamState.final = options?.keepFinal === true;
     generation += 1;
@@ -350,7 +350,6 @@ export function createTelegramDraftStream(params: {
       } catch (err) {
         params.warn?.(`telegram stream preview cleanup failed: ${formatErrorMessage(err)}`);
       }
-      return;
     }
   };
 

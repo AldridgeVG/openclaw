@@ -3,9 +3,13 @@ import type { SandboxConfig } from "./sandbox/types.js";
 import { isToolAllowedByPolicyName } from "./tool-policy-match.js";
 import { normalizeToolList, normalizeToolName, type ToolPolicyLike } from "./tool-policy.js";
 
+// Emits bounded audit logs when tool allow/deny policies remove or block tools.
+// Sanitizing here keeps logs single-line and safe for arbitrary tool names.
 const MAX_AUDIT_TOOL_NAMES = 50;
 const MAX_AUDIT_FIELD_LENGTH = 160;
 const toolPolicyAuditLogger = createSubsystemLogger("agents/tool-policy");
+
+export type ToolPolicyAuditLogLevel = "info" | "debug";
 
 type ToolPolicyRuleKind = "allow" | "deny" | "allow+deny" | "unknown";
 
@@ -152,11 +156,13 @@ function matchedPolicyRules(params: {
   return [...rules].toSorted();
 }
 
+/** Log tools removed by an allow/deny policy filter step. */
 export function auditToolPolicyFilter(params: {
   stepLabel: string;
   policy: ToolPolicyLike;
   before: readonly { name: string }[];
   after: readonly { name: string }[];
+  logLevel?: ToolPolicyAuditLogLevel;
 }): void {
   const removedByRule = removedToolNamesByRule({
     policy: params.policy,
@@ -176,25 +182,29 @@ export function auditToolPolicyFilter(params: {
       tools: matchedRuleSourceTools,
     });
     const matchedRuleSuffix = matchedRules.length > 0 ? `; matched ${matchedRules.join(", ")}` : "";
-    toolPolicyAuditLogger.info(
-      `tool policy removed ${removed.length} tool(s) via ${rule}: ${toolNames.join(", ")}${matchedRuleSuffix}`,
-      {
-        rule,
-        ruleKind,
-        ...(matchedRules.length > 0
-          ? {
-              matchedRules,
-              ...(truncated ? { matchedRulesTruncated: true } : {}),
-            }
-          : {}),
-        removedToolCount: removed.length,
-        removedTools: toolNames,
-        removedToolsTruncated: truncated,
-      },
-    );
+    const message = `tool policy removed ${removed.length} tool(s) via ${rule}: ${toolNames.join(", ")}${matchedRuleSuffix}`;
+    const metadata = {
+      rule,
+      ruleKind,
+      ...(matchedRules.length > 0
+        ? {
+            matchedRules,
+            ...(truncated ? { matchedRulesTruncated: true } : {}),
+          }
+        : {}),
+      removedToolCount: removed.length,
+      removedTools: toolNames,
+      removedToolsTruncated: truncated,
+    };
+    if (params.logLevel === "debug") {
+      toolPolicyAuditLogger.debug(message, metadata);
+    } else {
+      toolPolicyAuditLogger.info(message, metadata);
+    }
   }
 }
 
+/** Log a sandbox tool blocked by policy before execution. */
 export function auditSandboxToolPolicyBlock(params: {
   toolName: string;
   ruleType: "allow" | "deny";

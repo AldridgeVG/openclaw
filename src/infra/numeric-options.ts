@@ -1,12 +1,20 @@
+import {
+  resolveIntegerOption as resolveSharedIntegerOption,
+  resolveNonNegativeIntegerOption as resolveSharedNonNegativeIntegerOption,
+} from "@openclaw/normalization-core/number-coercion";
+
+// Numeric option facades keep legacy infra imports aligned with shared
+// normalization-core semantics.
+/** Resolve a non-negative integer option or return the fallback. */
 export function resolveNonNegativeIntegerOption(value: number, fallback: number): number {
-  return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : fallback;
+  return resolveSharedNonNegativeIntegerOption(value, fallback);
 }
 
+/** Resolve an integer option with a minimum bound or return the fallback. */
 export function resolveIntegerOption(
   value: number,
   fallback: number,
   params: { min: number },
 ): number {
-  const candidate = Number.isFinite(value) ? value : fallback;
-  return Math.max(params.min, Math.floor(candidate));
+  return resolveSharedIntegerOption(value, fallback, params);
 }

@@ -1,3 +1,7 @@
+import {
+  normalizeLowercaseStringOrEmpty,
+  normalizeOptionalString,
+} from "@openclaw/normalization-core/string-coerce";
 import { normalizeChatType } from "../../channels/chat-type.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
@@ -7,10 +11,6 @@ import {
   normalizeMainKey,
   resolveAgentIdFromSessionKey,
 } from "../../routing/session-key.js";
-import {
-  normalizeLowercaseStringOrEmpty,
-  normalizeOptionalString,
-} from "../../shared/string-coerce.js";
 import type { MsgContext } from "../templating.js";
 
 type RuntimePolicyContext = Pick<
@@ -83,6 +83,7 @@ function isMainSessionAlias(params: {
   );
 }
 
+/** Resolves the session key used for runtime policy checks and direct-message scoping. */
 export function resolveRuntimePolicySessionKey(params: {
   cfg?: OpenClawConfig;
   ctx?: RuntimePolicyContext;
@@ -113,6 +114,7 @@ export function resolveRuntimePolicySessionKey(params: {
     return sessionKey;
   }
 
+  // Direct main-session replies use a peer-scoped key so policy does not leak across DMs.
   return buildAgentPeerSessionKey({
     agentId,
     channel,

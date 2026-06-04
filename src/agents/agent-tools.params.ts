@@ -1,5 +1,7 @@
 import type { AnyAgentTool } from "./agent-tools.types.js";
 
+// Shared tool parameter validation helpers for file-edit style tools. They turn
+// model-facing malformed arguments into actionable retry guidance.
 export type RequiredParamGroup = {
   keys: readonly string[];
   allowEmpty?: boolean;
@@ -8,6 +10,8 @@ export type RequiredParamGroup = {
 };
 
 const RETRY_GUIDANCE_SUFFIX = " Supply correct parameters before retrying.";
+const XML_ARG_VALUE_SUFFIX_RE = /<\/arg_value>>+$/;
+const XML_ARG_VALUE_PATH_PARAM_KEYS = new Set(["path"]);
 
 function parameterValidationError(message: string): Error {
   return new Error(`${message}.${RETRY_GUIDANCE_SUFFIX}`);
@@ -33,6 +37,8 @@ function formatReceivedParamHint(
   record: Record<string, unknown>,
   groups: readonly RequiredParamGroup[],
 ): string {
+  // Include only present fields so errors can distinguish missing parameters
+  // from wrong-shaped or empty values without echoing full content.
   const allowEmptyKeys = new Set<string>();
   for (const group of groups) {
     if (group.allowEmpty) {
@@ -90,8 +96,48 @@ export const REQUIRED_PARAM_GROUPS = {
   ],
 } as const;
 
+/** Return a record view of model-supplied tool params when possible. */
 export function getToolParamsRecord(params: unknown): Record<string, unknown> | undefined {
   return params && typeof params === "object" ? (params as Record<string, unknown>) : undefined;
+}
+
+/** Strip extra closing markers sometimes produced in XML arg_value path params. */
+export function stripMalformedXmlArgValueSuffix(value: string): string {
+  return value.includes("</arg_value>") ? value.replace(XML_ARG_VALUE_SUFFIX_RE, "") : value;
+}
+
+/** Strip malformed XML suffixes from selected string fields without mutating input. */
+export function stripMalformedXmlArgValueSuffixFromKeys<T extends Record<string, unknown>>(
+  record: T,
+  keys: readonly string[],
+): T {
+  let normalized: T | undefined;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value !== "string") {
+      continue;
+    }
+    const stripped = stripMalformedXmlArgValueSuffix(value);
+    if (stripped !== value) {
+      normalized ??= { ...record };
+      normalized[key as keyof T] = stripped as T[keyof T];
+    }
+  }
+  return normalized ?? record;
+}
+
+function resolveMalformedXmlArgValuePathKeys(
+  groups: readonly RequiredParamGroup[] | undefined,
+): string[] {
+  const keys = new Set<string>();
+  for (const group of groups ?? []) {
+    for (const key of group.keys) {
+      if (XML_ARG_VALUE_PATH_PARAM_KEYS.has(key)) {
+        keys.add(key);
+      }
+    }
+  }
+  return [...keys];
 }
 
 export function assertRequiredParams(
@@ -135,6 +181,7 @@ export function assertRequiredParams(
   }
 }
 
+/** Wrap a tool execute function with required-parameter validation. */
 export function wrapToolParamValidation(
   tool: AnyAgentTool,
   requiredParamGroups?: readonly RequiredParamGroup[],
@@ -143,10 +190,15 @@ export function wrapToolParamValidation(
     ...tool,
     execute: async (toolCallId, params, signal, onUpdate) => {
       const record = getToolParamsRecord(params);
+      const pathKeys = resolveMalformedXmlArgValuePathKeys(requiredParamGroups);
+      const normalizedParams =
+        record && pathKeys.length > 0
+          ? stripMalformedXmlArgValueSuffixFromKeys(record, pathKeys)
+          : params;
       if (requiredParamGroups?.length) {
-        assertRequiredParams(record, requiredParamGroups, tool.name);
+        assertRequiredParams(getToolParamsRecord(normalizedParams), requiredParamGroups, tool.name);
       }
-      return tool.execute(toolCallId, params, signal, onUpdate);
+      return tool.execute(toolCallId, normalizedParams, signal, onUpdate);
     },
   };
 }

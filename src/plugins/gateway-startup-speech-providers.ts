@@ -1,6 +1,6 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { isRecord } from "../shared/record-coerce.js";
-import { normalizeOptionalLowercaseString } from "../shared/string-coerce.js";
 import { resolveEffectiveTtsConfig } from "../tts/tts-config.js";
 
 const TTS_PROVIDER_CONFIG_RESERVED_KEYS = new Set([
@@ -18,6 +18,7 @@ const TTS_PROVIDER_CONFIG_RESERVED_KEYS = new Set([
   "timeoutMs",
 ]);
 
+/** Treats missing activation as enabled while honoring explicit false values. */
 function isConfigActivationValueEnabled(value: unknown): boolean {
   if (value === false) {
     return false;
@@ -28,6 +29,7 @@ function isConfigActivationValueEnabled(value: unknown): boolean {
   return true;
 }
 
+/** Normalizes configured TTS provider ids for startup plugin selection. */
 export function normalizeConfiguredSpeechProviderIdForStartup(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -39,6 +41,7 @@ export function normalizeConfiguredSpeechProviderIdForStartup(value: unknown): s
   return normalized === "edge" ? "microsoft" : normalized;
 }
 
+/** Resolves provider activation from both canonical providers maps and legacy root keys. */
 function resolveProviderConfigActivation(
   ttsConfig: Record<string, unknown>,
   providerId: string,
@@ -137,6 +140,7 @@ function addConfiguredTtsProviderIds(target: Set<string>, value: unknown): void 
   }
 }
 
+/** Collects TTS provider ids referenced by root, agent, channel, account, and plugin config. */
 export function collectConfiguredSpeechProviderIds(config: OpenClawConfig): ReadonlySet<string> {
   const configured = new Set<string>();
   addConfiguredTtsProviderIds(configured, resolveEffectiveTtsConfig(config));
