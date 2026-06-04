@@ -15,9 +15,15 @@ import {
   XCircle,
   Ear,
 } from "lucide-react";
+import { marked } from "marked";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { ModelConfigPanel } from "./ModelConfigPanel";
 import { VoiceService, type VoiceState } from "./voice-service";
+
+marked.setOptions({
+  breaks: true,
+  gfm: true,
+});
 
 type ConnStatus = "connecting" | "connected" | "disconnected" | "error";
 type SetupStatus = "checking" | "installing" | "complete" | "error";
@@ -404,10 +410,21 @@ function App() {
                     )}
                   </div>
                   <div className="message-bubble">
-                    <p>
-                      {m.text}
-                      {m.streaming && <span className="cursor">▌</span>}
-                    </p>
+                    {m.role === "assistant" ? (
+                      <div className="markdown-body">
+                        <div
+                          dangerouslySetInnerHTML={{
+                            __html: marked.parse(m.text) as string,
+                          }}
+                        />
+                        {m.streaming && <span className="cursor">▌</span>}
+                      </div>
+                    ) : (
+                      <p>
+                        {m.text}
+                        {m.streaming && <span className="cursor">▌</span>}
+                      </p>
+                    )}
                   </div>
                 </div>
               ))
