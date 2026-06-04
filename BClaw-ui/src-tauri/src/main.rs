@@ -18,6 +18,7 @@ use gateway_manager::GatewayManager;
 
 pub struct AudioState {
     capture_stream: Mutex<Option<cpal::Stream>>,
+    wake_capture_stream: Mutex<Option<cpal::Stream>>,
     playback_handle: Mutex<Option<audio::playback::PlaybackHandle>>,
     selected_input_device: Mutex<Option<String>>,
 }
@@ -86,6 +87,38 @@ fn stop_capture(state: tauri::State<AudioState>) -> Result<(), String> {
     let mut capture = state.capture_stream.lock().map_err(|e| e.to_string())?;
     *capture = None; // Drop the stream to stop capture
     eprintln!("[tauri] stop_capture ok");
+    Ok(())
+}
+
+#[tauri::command]
+fn start_wake_capture(
+    app: tauri::AppHandle,
+    state: tauri::State<AudioState>,
+    sample_rate: Option<u32>,
+) -> Result<(), String> {
+    eprintln!("[tauri] start_wake_capture called, sample_rate={:?}", sample_rate);
+    let mut wake_capture = state.wake_capture_stream.lock().map_err(|e| e.to_string())?;
+    if wake_capture.is_some() {
+        eprintln!("[tauri] start_wake_capture skipped: already capturing");
+        return Ok(());
+    }
+    let device_name = {
+        let lock = state.selected_input_device.lock().map_err(|e| e.to_string())?;
+        lock.clone()
+    };
+    let target_rate = sample_rate.unwrap_or(audio::SAMPLE_RATE);
+    let stream = audio::capture::start_capture_with_event(app, device_name, target_rate, "audio:wake")?;
+    *wake_capture = Some(stream);
+    eprintln!("[tauri] start_wake_capture ok @ {} Hz", target_rate);
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_wake_capture(state: tauri::State<AudioState>) -> Result<(), String> {
+    eprintln!("[tauri] stop_wake_capture called");
+    let mut wake_capture = state.wake_capture_stream.lock().map_err(|e| e.to_string())?;
+    *wake_capture = None;
+    eprintln!("[tauri] stop_wake_capture ok");
     Ok(())
 }
 
@@ -183,6 +216,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .manage(AudioState {
             capture_stream: Mutex::new(None),
+            wake_capture_stream: Mutex::new(None),
             playback_handle: Mutex::new(None),
             selected_input_device: Mutex::new(None),
         })
@@ -234,6 +268,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             start_capture,
             stop_capture,
+            start_wake_capture,
+            stop_wake_capture,
             play_audio,
             stop_playback,
             list_input_devices,
@@ -256,6 +292,9 @@ fn main() {
             if let Some(state) = app_handle.try_state::<AudioState>() {
                 if let Ok(mut capture) = state.capture_stream.lock() {
                     *capture = None;
+                }
+                if let Ok(mut wake_capture) = state.wake_capture_stream.lock() {
+                    *wake_capture = None;
                 }
                 if let Ok(mut playback) = state.playback_handle.lock() {
                     if let Some(h) = playback.take() {

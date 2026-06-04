@@ -11,6 +11,7 @@ export type VoiceCallbacks = {
   onChatResponse?: (text: string, final: boolean) => void;
   onError?: (message: string) => void;
   onConnectionChange?: (connected: boolean) => void;
+  onWakeWordActive?: (active: boolean) => void;
 };
 
 export type TalkSessionConfig = {
@@ -46,6 +47,13 @@ export class VoiceService {
   private chatBuffer = "";
   private audioChunks: string[] = [];
   private asrAbortController: AbortController | null = null;
+
+  // Wake word state
+  private wakeListening = false;
+  private wakeChunks: string[] = [];
+  private wakeUnsub: (() => void) | null = null;
+  private wakeTimer: ReturnType<typeof setInterval> | null = null;
+  private wakeCooldown = false;
 
   constructor(
     private callbacks: VoiceCallbacks = {},
@@ -120,12 +128,92 @@ export class VoiceService {
   disconnect(): void {
     this.asrAbortController?.abort();
     this.stopListening();
+    this.stopWakeWordListening();
     this.unsubEvent?.();
     this.unsubEvent = null;
     this.client?.disconnect();
     this.client = null;
     this.callbacks.onConnectionChange?.(false);
     this.setState("idle");
+  }
+
+  async startWakeWordListening(): Promise<void> {
+    if (this.wakeListening) return;
+    if (this.state !== "idle") return;
+
+    const asrConfig = getAsrConfig();
+    if (!asrConfig.wakeWord.enabled || asrConfig.provider !== "local-paraformer") return;
+
+    this.wakeListening = true;
+    this.wakeChunks = [];
+    this.wakeCooldown = false;
+    this.callbacks.onWakeWordActive?.(true);
+    console.log("[voice] startWakeWordListening, word=", asrConfig.wakeWord.wakeWord);
+
+    try {
+      await invoke("start_wake_capture", { sampleRate: 16000 });
+    } catch (err) {
+      console.warn("[voice] start_wake_capture failed:", err);
+      this.wakeListening = false;
+      return;
+    }
+
+    this.wakeUnsub = await listen<{ audio_base64: string; timestamp_ms: number }>(
+      "audio:wake",
+      (event) => {
+        if (!this.wakeListening || this.wakeCooldown) return;
+        this.wakeChunks.push(event.payload.audio_base64);
+      },
+    );
+
+    // Periodic ASR check every 2.5 seconds
+    this.wakeTimer = setInterval(async () => {
+      if (!this.wakeListening || this.wakeCooldown || this.wakeChunks.length === 0) return;
+      if (this.state !== "idle") return;
+
+      const chunksToProcess = [...this.wakeChunks];
+      this.wakeChunks = [];
+
+      try {
+        const allBytes = mergeBase64Chunks(chunksToProcess);
+        const samples = new Int16Array(allBytes.buffer);
+        const transcript = await invoke<string>("transcribe_audio", {
+          samples: Array.from(samples),
+          sampleRate: 16000,
+        });
+        console.log("[voice] wake ASR transcript:", transcript);
+
+        if (transcript.includes(asrConfig.wakeWord.wakeWord)) {
+          console.log("[voice] wake word detected!");
+          this.wakeCooldown = true;
+          await this.stopWakeWordListening();
+          await this.startListening();
+          return;
+        }
+      } catch (err) {
+        console.warn("[voice] wake ASR failed:", err);
+      }
+    }, 2500);
+  }
+
+  async stopWakeWordListening(): Promise<void> {
+    if (!this.wakeListening) return;
+    console.log("[voice] stopWakeWordListening");
+    this.wakeListening = false;
+    this.callbacks.onWakeWordActive?.(false);
+
+    if (this.wakeTimer) {
+      clearInterval(this.wakeTimer);
+      this.wakeTimer = null;
+    }
+
+    this.wakeUnsub?.();
+    this.wakeUnsub = null;
+    this.wakeChunks = [];
+
+    await invoke("stop_wake_capture").catch((e) =>
+      console.warn("[voice] stop_wake_capture error:", e),
+    );
   }
 
   async startListening(): Promise<void> {
@@ -136,6 +224,9 @@ export class VoiceService {
       console.log("[voice] startListening skipped: already listening");
       return;
     }
+
+    // Stop wake word listening to avoid device conflict
+    await this.stopWakeWordListening();
 
     const asrConfig = getAsrConfig();
     if (asrConfig.provider === "none") {
@@ -491,6 +582,7 @@ export class VoiceService {
     this.unsubAudio = null;
     invoke("stop_capture").catch(() => undefined);
     invoke("stop_playback").catch(() => undefined);
+    // Keep wake word running unless disconnecting (handled by caller)
   }
 
   private setState(state: VoiceState): void {
@@ -498,6 +590,16 @@ export class VoiceService {
     console.log("[voice] state:", this.state, "->", state);
     this.state = state;
     this.callbacks.onStateChange?.(state);
+
+    // Auto-restart wake word listening when returning to idle
+    if (state === "idle" && !this.wakeListening && !this._isListening && this.connected) {
+      const asrConfig = getAsrConfig();
+      if (asrConfig.wakeWord.enabled && asrConfig.provider === "local-paraformer") {
+        this.startWakeWordListening().catch((err) => {
+          console.warn("[voice] auto-restart wake word failed:", err);
+        });
+      }
+    }
   }
 }
 

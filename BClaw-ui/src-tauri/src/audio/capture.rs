@@ -6,8 +6,6 @@ use tauri::{AppHandle, Emitter};
 
 use super::f32_to_pcm16_bytes;
 
-const CAPTURE_EVENT: &str = "audio:capture";
-
 #[derive(Clone, serde::Serialize)]
 struct CapturePayload {
     audio_base64: String,
@@ -55,13 +53,12 @@ impl Resampler {
     }
 }
 
-/// Start capturing microphone audio and emit PCM16 base64 frames to the frontend.
-/// If `device_name` is provided, uses that specific device; otherwise uses the default input device.
-/// `target_sample_rate` is the output rate after resampling (e.g. 16000 for local ASR, 24000 for gateway relay).
-pub fn start_capture(
+/// Internal implementation that allows specifying the Tauri event name.
+pub fn start_capture_with_event(
     app: AppHandle,
     device_name: Option<String>,
     target_sample_rate: u32,
+    event_name: &'static str,
 ) -> Result<cpal::Stream, String> {
     let host = cpal::default_host();
     let device = if let Some(name) = device_name {
@@ -144,7 +141,7 @@ pub fn start_capture(
                         .as_millis() as u64,
                 };
                 // Best-effort emit; ignore errors if frontend is not ready.
-                if let Err(e) = app_handle.emit(CAPTURE_EVENT, payload) {
+                if let Err(e) = app_handle.emit(event_name, payload) {
                     eprintln!("[audio] emit error: {}", e);
                 }
             },
@@ -161,4 +158,13 @@ pub fn start_capture(
 
     eprintln!("[audio] capture stream started");
     Ok(stream)
+}
+
+/// Start capturing microphone audio and emit PCM16 base64 frames via the default `audio:capture` event.
+pub fn start_capture(
+    app: AppHandle,
+    device_name: Option<String>,
+    target_sample_rate: u32,
+) -> Result<cpal::Stream, String> {
+    start_capture_with_event(app, device_name, target_sample_rate, "audio:capture")
 }

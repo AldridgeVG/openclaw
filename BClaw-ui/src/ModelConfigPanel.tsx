@@ -47,6 +47,15 @@ export function ModelConfigPanel({ onClose }: Props) {
   const testRecordingRef = useRef(false);
   const testUnlistenRef = useRef<UnlistenFn | null>(null);
 
+  // Wake word test state
+  const [wakeTestRecording, setWakeTestRecording] = useState(false);
+  const [wakeTestLoading, setWakeTestLoading] = useState(false);
+  const [wakeTestResult, setWakeTestResult] = useState("");
+  const [wakeTestError, setWakeTestError] = useState("");
+  const wakeTestChunksRef = useRef<string[]>([]);
+  const wakeTestRecordingRef = useRef(false);
+  const wakeTestUnlistenRef = useRef<UnlistenFn | null>(null);
+
   useEffect(() => {
     Promise.all([getModelConfig(), Promise.resolve(getAsrConfig())])
       .then(([c, a]) => {
@@ -61,6 +70,7 @@ export function ModelConfigPanel({ onClose }: Props) {
   useEffect(() => {
     return () => {
       stopTestCapture();
+      stopWakeTestCapture();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -76,15 +86,21 @@ export function ModelConfigPanel({ onClose }: Props) {
   const handleAsrProviderChange = (provider: AsrProvider) => {
     setAsrConfig((prev) => {
       if (provider === "siliconflow") {
-        return { ...SILICONFLOW_ASR_CONFIG, apiKey: prev.apiKey };
+        return { ...SILICONFLOW_ASR_CONFIG, apiKey: prev.apiKey, wakeWord: prev.wakeWord };
       }
       if (provider === "openai-realtime") {
-        return { ...OPENAI_REALTIME_ASR_CONFIG, apiKey: prev.apiKey };
+        return { ...OPENAI_REALTIME_ASR_CONFIG, apiKey: prev.apiKey, wakeWord: prev.wakeWord };
       }
       if (provider === "local-paraformer") {
-        return { ...LOCAL_PARAFORMER_CONFIG };
+        return { ...LOCAL_PARAFORMER_CONFIG, wakeWord: prev.wakeWord };
       }
-      return { provider: "none", apiKey: prev.apiKey, baseUrl: "", model: "" };
+      return {
+        provider: "none",
+        apiKey: prev.apiKey,
+        baseUrl: "",
+        model: "",
+        wakeWord: prev.wakeWord,
+      };
     });
     // Reset test state when provider changes
     setTestResult("");
@@ -132,6 +148,19 @@ export function ModelConfigPanel({ onClose }: Props) {
       await invoke("stop_capture");
     } catch (e) {
       console.warn("[asr-test] stop_capture error:", e);
+    }
+  };
+
+  const stopWakeTestCapture = async () => {
+    wakeTestRecordingRef.current = false;
+    if (wakeTestUnlistenRef.current) {
+      wakeTestUnlistenRef.current();
+      wakeTestUnlistenRef.current = null;
+    }
+    try {
+      await invoke("stop_capture");
+    } catch (e) {
+      console.warn("[wake-test] stop_capture error:", e);
     }
   };
 
@@ -201,6 +230,81 @@ export function ModelConfigPanel({ onClose }: Props) {
       if (testUnlistenRef.current) {
         testUnlistenRef.current();
         testUnlistenRef.current = null;
+      }
+    }
+  };
+
+  const toggleWakeWordTest = async () => {
+    if (wakeTestRecording) {
+      // Stop
+      setWakeTestRecording(false);
+      setWakeTestLoading(true);
+      setWakeTestError("");
+      setWakeTestResult("");
+      await stopWakeTestCapture();
+
+      const chunks = wakeTestChunksRef.current;
+      wakeTestChunksRef.current = [];
+      if (chunks.length === 0) {
+        setWakeTestLoading(false);
+        setWakeTestError("没有采集到音频，请检查麦克风权限。");
+        return;
+      }
+
+      try {
+        const allBytes = mergeBase64Chunks(chunks);
+        const samples = new Int16Array(allBytes.buffer);
+        const sampleRate = 16000;
+        const transcript = await invoke<string>("transcribe_audio", {
+          samples: Array.from(samples),
+          sampleRate,
+        });
+        const detected = transcript.trim().includes(asrConfig.wakeWord.wakeWord);
+        setWakeTestResult(
+          detected
+            ? `检测到唤醒词「${asrConfig.wakeWord.wakeWord}」！识别内容：${transcript.trim()}`
+            : `未检测到唤醒词。识别内容：${transcript.trim()}`,
+        );
+      } catch (err) {
+        console.error("[wake-test] transcribe failed:", err);
+        setWakeTestError(`识别失败: ${String(err)}`);
+      } finally {
+        setWakeTestLoading(false);
+      }
+      return;
+    }
+
+    // Start
+    if (asrConfig.provider !== "local-paraformer") {
+      setWakeTestError("当前测试仅支持本地 Paraformer；请先在上方选择本地 Paraformer。");
+      return;
+    }
+
+    setWakeTestRecording(true);
+    setWakeTestLoading(false);
+    setWakeTestResult("");
+    setWakeTestError("");
+    wakeTestChunksRef.current = [];
+    wakeTestRecordingRef.current = true;
+
+    try {
+      const unlisten = await listen<{ audio_base64: string; timestamp_ms: number }>(
+        "audio:capture",
+        (event) => {
+          if (!wakeTestRecordingRef.current) return;
+          wakeTestChunksRef.current.push(event.payload.audio_base64);
+        },
+      );
+      wakeTestUnlistenRef.current = unlisten;
+      await invoke("start_capture", { sampleRate: 16000 });
+    } catch (err) {
+      console.error("[wake-test] start failed:", err);
+      setWakeTestError(`启动录音失败: ${String(err)}`);
+      setWakeTestRecording(false);
+      wakeTestRecordingRef.current = false;
+      if (wakeTestUnlistenRef.current) {
+        wakeTestUnlistenRef.current();
+        wakeTestUnlistenRef.current = null;
       }
     }
   };
@@ -413,6 +517,60 @@ export function ModelConfigPanel({ onClose }: Props) {
 
                 <div className="config-divider" />
 
+                <div className="config-section">
+                  <h4 className="config-section-title">语音唤醒</h4>
+
+                  <div className="config-field config-checkbox">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={asrConfig.wakeWord.enabled}
+                        onChange={(e) =>
+                          setAsrConfig((prev) => ({
+                            ...prev,
+                            wakeWord: { ...prev.wakeWord, enabled: e.target.checked },
+                          }))
+                        }
+                      />
+                      启用语音唤醒
+                    </label>
+                  </div>
+
+                  <div className="config-field">
+                    <label>唤醒词</label>
+                    <input
+                      type="text"
+                      value={asrConfig.wakeWord.wakeWord}
+                      onChange={(e) =>
+                        setAsrConfig((prev) => ({
+                          ...prev,
+                          wakeWord: { ...prev.wakeWord, wakeWord: e.target.value },
+                        }))
+                      }
+                      placeholder="例如：你好小爪"
+                    />
+                  </div>
+
+                  <div className="config-field">
+                    <label>唤醒灵敏度 ({asrConfig.wakeWord.sensitivity.toFixed(1)})</label>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={1.0}
+                      step={0.1}
+                      value={asrConfig.wakeWord.sensitivity}
+                      onChange={(e) =>
+                        setAsrConfig((prev) => ({
+                          ...prev,
+                          wakeWord: { ...prev.wakeWord, sensitivity: Number(e.target.value) },
+                        }))
+                      }
+                    />
+                  </div>
+                </div>
+
+                <div className="config-divider" />
+
                 <div className="config-test-section">
                   <h4 className="config-section-title">语音输入测试</h4>
                   <p className="config-test-hint">
@@ -466,6 +624,65 @@ export function ModelConfigPanel({ onClose }: Props) {
                     <div className="config-test-result">
                       <strong>识别结果：</strong>
                       <p>{testResult}</p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="config-divider" />
+
+                <div className="config-test-section">
+                  <h4 className="config-section-title">语音唤醒测试</h4>
+                  <p className="config-test-hint">
+                    点击按钮开始录音（约 3 秒），说出唤醒词后查看检测结果。
+                  </p>
+
+                  <button
+                    className={`voice-test-btn ${wakeTestRecording ? "recording" : ""}`}
+                    onClick={toggleWakeWordTest}
+                    disabled={wakeTestLoading || asrConfig.provider !== "local-paraformer"}
+                    title={
+                      asrConfig.provider !== "local-paraformer"
+                        ? "请选择本地 Paraformer 以启用测试"
+                        : wakeTestRecording
+                          ? "结束录音"
+                          : "开始录音"
+                    }
+                  >
+                    {wakeTestLoading ? (
+                      <>
+                        <Loader2 size={18} className="spin" />
+                        识别中...
+                      </>
+                    ) : wakeTestRecording ? (
+                      <>
+                        <MicOff size={18} />
+                        结束录音
+                      </>
+                    ) : (
+                      <>
+                        <Mic size={18} />
+                        测试语音唤醒
+                      </>
+                    )}
+                  </button>
+
+                  {asrConfig.provider !== "local-paraformer" && (
+                    <p className="config-test-note">
+                      当前测试仅支持本地 Paraformer；请先在上方选择本地 Paraformer。
+                    </p>
+                  )}
+
+                  {wakeTestError && (
+                    <div className="config-alert config-alert-error" style={{ margin: "12px 0 0" }}>
+                      <AlertCircle size={16} />
+                      <span>{wakeTestError}</span>
+                    </div>
+                  )}
+
+                  {wakeTestResult && (
+                    <div className="config-test-result">
+                      <strong>检测结果：</strong>
+                      <p>{wakeTestResult}</p>
                     </div>
                   )}
                 </div>

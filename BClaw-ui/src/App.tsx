@@ -13,6 +13,7 @@ import {
   Loader2,
   CheckCircle2,
   XCircle,
+  Ear,
 } from "lucide-react";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { ModelConfigPanel } from "./ModelConfigPanel";
@@ -91,6 +92,7 @@ function App() {
   const [showConfig, setShowConfig] = useState(false);
   const [inputDevices, setInputDevices] = useState<string[]>([]);
   const [selectedInputDevice, setSelectedInputDevice] = useState<string>("");
+  const [wakeActive, setWakeActive] = useState(false);
 
   const voiceRef = useRef<VoiceService | null>(null);
 
@@ -211,6 +213,9 @@ function App() {
           onConnectionChange: (connected) => {
             setConnStatus(connected ? "connected" : "disconnected");
           },
+          onWakeWordActive: (active) => {
+            setWakeActive(active);
+          },
         },
         { token },
       );
@@ -289,7 +294,11 @@ function App() {
   };
 
   const voiceConfig: Record<VoiceState, { label: string; sub: string; pulse: boolean }> = {
-    idle: { label: "点击说话", sub: "或输入文字开始对话", pulse: false },
+    idle: {
+      label: wakeActive ? "语音唤醒中" : "点击说话",
+      sub: wakeActive ? "说出唤醒词即可开始对话" : "或输入文字开始对话",
+      pulse: wakeActive,
+    },
     connecting: { label: "连接中", sub: "正在连接 Gateway", pulse: true },
     listening: { label: "聆听中", sub: "请说出您的问题", pulse: true },
     processing: { label: "思考中", sub: "正在处理您的请求", pulse: true },
@@ -299,6 +308,7 @@ function App() {
 
   const StatusIcon = statusConfig[connStatus].icon;
   const isBusy = voiceState !== "idle" && voiceState !== "error";
+  const showWakeIndicator = voiceState === "idle" && wakeActive;
 
   if (setupStatus !== "complete") {
     return <SetupScreen steps={setupSteps} status={setupStatus} errorMessage={setupError} />;
@@ -356,11 +366,17 @@ function App() {
         {/* Voice Orb */}
         <div className="voice-section">
           <button
-            className={`voice-orb ${isBusy ? "active" : ""} ${voiceState}`}
+            className={`voice-orb ${isBusy || showWakeIndicator ? "active" : ""} ${voiceState}`}
             onClick={handleMicClick}
             aria-label="语音输入"
           >
-            {isBusy ? <MicOff size={36} /> : <Mic size={36} />}
+            {isBusy ? (
+              <MicOff size={36} />
+            ) : showWakeIndicator ? (
+              <Ear size={36} />
+            ) : (
+              <Mic size={36} />
+            )}
           </button>
           <div className="voice-labels">
             <p className="voice-primary">{voiceConfig[voiceState].label}</p>
