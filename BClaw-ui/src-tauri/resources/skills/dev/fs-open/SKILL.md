@@ -15,7 +15,7 @@ description: >
 
 Before any API call, the agent **must** obtain credentials from the user:
 
-1. **Ask the user** for their `appId` and `appSecret` (from https://open.fscut.com/#/user)
+1. **Ask the user** for their `appId` and `appSecret` (from https://open.bcjgy.com/#/user)
 2. **Set environment variables** or pass as CLI arguments:
    ```bash
    export FS_OPEN_APP_ID="your_app_id"
@@ -63,7 +63,7 @@ Before any API call, the agent **must** obtain credentials from the user:
 - Statistics: date range must be within last **3 months**
 - Status records: start/end must be within **same day**, within last **100 days**
 - Machine quota: only "available machines" in the user's list can be queried
-- Rate limits: check in Personal Center at https://open.fscut.com
+- Rate limits: check in Personal Center at https://open.bcjgy.com
 
 ## Error Codes
 

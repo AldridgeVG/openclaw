@@ -15,7 +15,7 @@ description: >
 
 | Credential  | How to Obtain                                    |
 | ----------- | ------------------------------------------------ |
-| `appId`     | Personal Center at https://open.fscut.com/#/user |
+| `appId`     | Personal Center at https://open.bcjgy.com/#/user |
 | `appSecret` | Same page (sensitive — keep secure)              |
 
 ### Providing Credentials to Scripts

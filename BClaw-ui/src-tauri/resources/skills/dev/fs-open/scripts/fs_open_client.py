@@ -20,7 +20,7 @@ except ImportError:
     sys.exit(1)
 
 
-BASE_URL = os.environ.get("FS_OPEN_BASE_URL", "https://mcs-gateway.fscut.com")
+BASE_URL = os.environ.get("FS_OPEN_BASE_URL", "https://mcs-gateway.bcjgy.com")
 
 
 class FSCUTAuthError(Exception):
